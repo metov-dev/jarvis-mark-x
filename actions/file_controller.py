@@ -37,6 +37,32 @@ def _is_protected(p: Path) -> bool:
     return target in home.parents
 
 
+_SENSITIVE_NAMES = {
+    "api_keys.json", "token.json", "credentials.json", "unlock_secret.txt",
+    ".env", "id_rsa", "id_ed25519", "userbot.session", "userbot.session-journal",
+    "jarvis_memory.db", "settings.json", "web.config",
+}
+_SENSITIVE_EXTS = {".env", ".session", ".session-journal", ".pem", ".key", ".pfx", ".kdbx"}
+_SENSITIVE_DIRS = {".ssh", ".aws", ".gnupg", "system32"}
+
+
+def _is_sensitive(p: Path) -> bool:
+    """Защита от утечки секретов и системных конфигов через ИИ-ассистента."""
+    try:
+        resolved = p.expanduser().resolve()
+    except OSError:
+        return True
+    name_low = resolved.name.lower()
+    if name_low in _SENSITIVE_NAMES or resolved.suffix.lower() in _SENSITIVE_EXTS:
+        return True
+    parts_low = {part.lower() for part in resolved.parts}
+    if parts_low.intersection(_SENSITIVE_DIRS):
+        return True
+    if "config" in parts_low and any(k in name_low for k in ("key", "secret", "token", "cred", "pass", "session", "json")):
+        return True
+    return False
+
+
 def _to_recycle_bin(p: Path) -> None:
     """Windows: в Корзину (можно вернуть). Иначе — обычное удаление."""
     import sys
@@ -91,6 +117,8 @@ def file_controller(parameters: dict, player=None) -> str:
 
         elif action == "read":
             p = Path(path)
+            if _is_sensitive(p):
+                return f"Доступ к защищённому файлу ограничен: {p.name}"
             if not p.exists():
                 return f"Файл не найден: {path}"
             text = p.read_text(encoding="utf-8", errors="replace")
@@ -101,6 +129,8 @@ def file_controller(parameters: dict, player=None) -> str:
 
         elif action == "create_file":
             p = Path(path)
+            if _is_sensitive(p):
+                return "Создание файлов с таким именем запрещено политикой безопасности."
             if p.exists():
                 return f"Файл уже существует, не перезаписываю: {p}."
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -122,8 +152,8 @@ def file_controller(parameters: dict, player=None) -> str:
             if not raw_path:
                 return "Не удаляю: не указано, что именно удалить."
             p = Path(path)
-            if _is_protected(p):
-                return f"Не удаляю системную папку целиком: {p}."
+            if _is_protected(p) or _is_sensitive(p):
+                return f"Не удаляю системный или защищённый файл: {p}."
             if not p.exists():
                 return f"Не найдено: {path}"
             _to_recycle_bin(p)
@@ -132,12 +162,16 @@ def file_controller(parameters: dict, player=None) -> str:
             return f"Удалено (в Корзину): {p.name}."
 
         elif action == "move":
+            if _is_sensitive(Path(path)) or _is_sensitive(Path(dest)):
+                return "Операция с защищёнными файлами запрещена."
             shutil.move(path, dest)
             if player:
                 player.write_log(f"FILE: Перемещено → {dest}")
             return f"Перемещено в {dest}."
 
         elif action == "copy":
+            if _is_sensitive(Path(path)) or _is_sensitive(Path(dest)):
+                return "Операция с защищёнными файлами запрещена."
             src = Path(path)
             if src.is_dir():
                 shutil.copytree(path, dest)
@@ -149,6 +183,8 @@ def file_controller(parameters: dict, player=None) -> str:
 
         elif action == "rename":
             p = Path(path)
+            if _is_sensitive(p) or _is_sensitive(p.parent / new_name):
+                return "Операция с защищёнными файлами запрещена."
             new_p = p.parent / new_name
             p.rename(new_p)
             if player:

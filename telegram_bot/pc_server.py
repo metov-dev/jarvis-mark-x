@@ -469,22 +469,14 @@ def _do_volume(direction: int, steps: int = 3) -> dict:
 
 
 def _do_unlock() -> dict:
-    """Wake the screen (Space) → type the unlock password → Enter.
-    Works only if the screen is NOT on the secure Windows lock (see note above)."""
-    import time
+    """Wake the screen (Space). Password typing is disabled for security."""
     try:
-        pw = _read_unlock_password()
         _press_vk(_VK_SPACE)
-        time.sleep(0.4)
-        for ch in pw:
-            _type_char(ch)
-            time.sleep(0.03)
-        time.sleep(0.2)
-        _press_vk(_VK_ENTER)
-        return _r("🔓 Отправил: пробел → пароль → Enter. Если это был защищённый "
-                  "локскрин Windows — ввод туда не проходит (используй RustDesk).")
+        return _r("Экран разбужен. Автоматический ввод пароля отключён для безопасности "
+                  "(эмуляция клавиатуры не может снять экран блокировки Windows и печатает пароль в активные окна). "
+                  "Разблокируй вручную или через RustDesk.")
     except Exception as e:
-        return _r(f"❌ Не смог отправить разблокировку: {e}")
+        return _r(f"❌ Не смог разбудить экран: {e}")
 
 
 def _launch_jarvis() -> dict:
