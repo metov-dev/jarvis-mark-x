@@ -2421,6 +2421,13 @@ class Jarvis:
             parts.append(profile_str)
         if mem_str:
             parts.append(mem_str)
+        try:
+            from actions.obsidian import recent_notes_digest
+            obsidian_digest = recent_notes_digest()
+            if obsidian_digest:
+                parts.append(obsidian_digest)
+        except Exception as exc:
+            logger.debug("Obsidian дайджест не загрузился: %s", exc)
         # Итоги прошлых разговоров, а если сессию не удалось возобновить
         # (или это первый запуск) — ещё и хвост разговора: без него Джарвис
         # после разрыва начинал с чистого листа.

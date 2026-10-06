@@ -16,6 +16,7 @@ Obsidian-vault — это обычная папка с `.md`-файлами, к�
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -294,3 +295,65 @@ def obsidian_action(parameters: dict, player=None) -> str:
         "Не понял действие для базы знаний. "
         "Доступно: записать, дописать, удалить, добавить в дневник, найти, прочитать, список."
     )
+
+
+def recent_notes_digest(limit: int = 5, max_chars: int = 1500) -> str:
+    """Заголовки и первые строки последних изменённых заметок одним блоком.
+
+    Выключатель: JARVIS_OBSIDIAN_DIGEST=0 возвращает пустую строку.
+    Нет vault или он пуст — пустая строка, без исключений.
+    """
+    if os.getenv("JARVIS_OBSIDIAN_DIGEST", "1").strip() == "0":
+        return ""
+    if limit <= 0 or max_chars <= 0:
+        return ""
+
+    try:
+        cfg = _config()
+        vault_path = cfg.get("vault_path")
+        if not vault_path:
+            return ""
+        vault = Path(vault_path)
+        if not vault.exists() or not vault.is_dir():
+            return ""
+
+        notes = sorted(_iter_notes(vault), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not notes:
+            return ""
+
+        items = []
+        for p in notes[:limit]:
+            title = p.stem
+            try:
+                raw = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            body = _strip_frontmatter(raw).strip()
+            lines = [line.strip() for line in body.splitlines() if line.strip()]
+            if lines and lines[0].lstrip("#").strip().lower() == title.lower():
+                lines = lines[1:]
+            preview = " ".join(lines[:3])
+            if preview:
+                items.append(f"• {title}: {preview}")
+            else:
+                items.append(f"• {title}")
+
+        if not items:
+            return ""
+
+        header = "[ПОСЛЕДНИЕ ЗАМЕТКИ В OBSIDIAN]\n"
+        block = header + "\n".join(items)
+        if len(block) > max_chars:
+            truncated = block[:max_chars]
+            last_space = truncated.rfind(" ")
+            last_nl = truncated.rfind("\n")
+            cut_idx = max(last_space, last_nl)
+            if cut_idx > len(header):
+                block = truncated[:cut_idx].rstrip() + "…"
+            else:
+                block = truncated.rstrip() + "…"
+        return block
+    except Exception as exc:
+        _logger.debug("recent_notes_digest: %s", exc)
+        return ""
+
