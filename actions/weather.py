@@ -11,6 +11,22 @@ import urllib.request
 logger = logging.getLogger(__name__)
 
 
+# Ослышки распознавания и падежи → именительный падеж, который знает _CITY_ALIASES.
+_MISHEARD = {
+    "питер": "Санкт-Петербург",
+    "алма-ата": "Алматы",
+    "алмата": "Алматы",
+    "алмате": "Алматы",
+    "нур-султан": "Астана",
+    "чимкент": "Шымкент",
+    "шемкент": "Шымкент",
+    "шемкинт": "Шымкент",
+    "шимкент": "Шымкент",
+    "шимкинт": "Шымкент",
+    "шымкинт": "Шымкент",
+    "чимкинт": "Шымкент",
+}
+
 _CITY_ALIASES = {
     "москва": "Moscow",
     "питер": "Saint Petersburg",
@@ -32,6 +48,18 @@ _CITY_ALIASES = {
 }
 
 _DESC_RU = {
+    "Light rain shower": "Лёгкий ливень",
+    "Moderate or heavy rain shower": "Сильный ливень",
+    "Patchy light rain": "Местами лёгкий дождь",
+    "Light drizzle": "Морось",
+    "Patchy light drizzle": "Местами морось",
+    "Patchy snow possible": "Местами снег",
+    "Patchy light snow": "Местами лёгкий снег",
+    "Light sleet": "Дождь со снегом",
+    "Freezing fog": "Ледяной туман",
+    "Haze": "Дымка",
+    "Moderate or heavy rain with thunder": "Гроза с дождём",
+    "Patchy light rain with thunder": "Гроза",
     "Sunny": "Солнечно",
     "Clear": "Ясно",
     "Partly cloudy": "Переменная облачность",
@@ -49,6 +77,44 @@ _DESC_RU = {
     "Blizzard": "Метель",
     "Patchy rain possible": "Местами дождь",
 }
+
+
+_DESC_RU_FOLDED = {k.casefold(): v for k, v in _DESC_RU.items()}
+
+
+def describe(desc_en: str) -> str:
+    """Описание неба по-русски; wttr.in присылает хвостовые пробелы и разный регистр."""
+    clean = (desc_en or "").strip()
+    return _DESC_RU_FOLDED.get(clean.casefold(), clean)
+
+
+def city_candidates(spoken: str) -> list[str]:
+    """Именительный падеж для сказанного «в Шымкенте», с учётом ослышек.
+
+    Погодный сервис понимает только имя города, а не «Шымкенте» или «Шимкент».
+    Порядок результата = порядок проб.
+    """
+    raw = (spoken or "").strip()
+    if not raw:
+        return []
+    low = raw.lower()
+    if low in _MISHEARD:
+        return [_MISHEARD[low]]
+    out: list[str] = [raw]
+    if low.endswith("е"):
+        out += [raw[:-1], raw[:-1] + "а"]
+    elif low.endswith("и"):
+        out += [raw[:-1], raw[:-1] + "ь", raw[:-1] + "я"]
+    elif low.endswith(("у", "ю")):
+        out.append(raw[:-1] + "а")
+    resolved: list[str] = []
+    for cand in out:
+        cand = _MISHEARD.get(cand.lower(), cand)      # «шемкинте» → «шемкинт» → Шымкент
+        if cand.lower() not in (c.lower() for c in resolved):
+            resolved.append(cand)
+    # то, что распознали по алиасу, пробуем первым
+    resolved.sort(key=lambda c: c.lower() not in _CITY_ALIASES)
+    return resolved
 
 
 # Коды погоды WWO (их отдаёт wttr.in) → значок карточки.
@@ -82,6 +148,12 @@ _WEATHER_CACHE: dict[str, tuple[float, str]] = {}
 _CACHE_TTL_SEC = 300  # 5 минут
 
 
+def _fetch_wttr(city_en: str) -> dict:
+    url = f"https://wttr.in/{urllib.parse.quote(city_en)}?format=j1"
+    with urllib.request.urlopen(url, timeout=4) as resp:
+        return json.loads(resp.read().decode())
+
+
 def weather_action(parameters: dict, player=None) -> str:
     city = (parameters.get("city") or "").strip()
     if not city:
@@ -93,6 +165,9 @@ def weather_action(parameters: dict, player=None) -> str:
             logger.debug("Местоположение для погоды: %s", exc)
     if not city:
         return "Для какого города, сэр? Не удалось определить, где вы."
+    spoken_city = city
+    candidates = city_candidates(city)
+    city = candidates[0]
     city_en = _CITY_ALIASES.get(city.lower(), city)
     now = time.monotonic()
 
@@ -106,9 +181,17 @@ def weather_action(parameters: dict, player=None) -> str:
             return cached_result
 
     try:
-        url = f"https://wttr.in/{urllib.parse.quote(city_en)}?format=j1"
-        with urllib.request.urlopen(url, timeout=4) as resp:
-            data = json.loads(resp.read().decode())
+        data = None
+        for cand in candidates:
+            try:
+                data = _fetch_wttr(_CITY_ALIASES.get(cand.lower(), cand))
+            except Exception as exc:
+                logger.debug("Погода для «%s» не получена: %s", cand, exc)
+                continue
+            city = cand
+            break
+        if data is None:
+            raise RuntimeError("ни один вариант города не ответил")
 
         current = data["current_condition"][0]
         temp_c = current["temp_C"]
@@ -117,7 +200,7 @@ def weather_action(parameters: dict, player=None) -> str:
         humidity = current["humidity"]
         wind = current["windspeedKmph"]
 
-        desc_ru = _DESC_RU.get(desc_en, desc_en)
+        desc_ru = describe(desc_en)
 
         # Прогноз на три дня. Раньше бралась только погода «сейчас» — на
         # «погода на завтра» Джарвис отвечал про сегодня.
@@ -130,12 +213,12 @@ def weather_action(parameters: dict, player=None) -> str:
             days.append({
                 "name": _DAY_NAMES[i],
                 "max": day.get("maxtempC", "?"), "min": day.get("mintempC", "?"),
-                "desc": _DESC_RU.get(d_en.strip(), d_en.strip()),
+                "desc": describe(d_en),
                 "rain": rain, "kind": weather_kind(noon.get("weatherCode")),
             })
 
         result = (
-            f"Погода в {city}: {desc_ru}. "
+            f"Погода, {city}: {desc_ru}. "
             f"Температура {temp_c}°C, ощущается как {feels}°C. "
             f"Влажность {humidity}%, ветер {wind} км/ч."
         )
@@ -160,5 +243,7 @@ def weather_action(parameters: dict, player=None) -> str:
             player.write_log(f"SYS: Погода — {city}: {temp_c}°C, {desc_ru}")
         return result
 
-    except Exception:
-        return f"Не удалось получить погоду для {city}. Проверьте подключение к интернету."
+    except Exception as exc:
+        logger.warning("Погода для «%s» недоступна: %s", spoken_city, exc)
+        return (f"Не удалось получить погоду для {spoken_city}: город не найден "
+                "или нет связи с погодным сервисом.")
