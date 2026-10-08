@@ -95,3 +95,33 @@ def test_cache_ignores_commas_and_case_learns_short_phrases(tmp_path):
     assert not cache.wanted("Сегодня у вас три пары и одна контрольная по физике, сэр.")   # длинное
     cache.MAX_LEARNED = 1 - len(q._PHRASE_SET)                         # на диске уже 1 файл — предел
     assert not cache.wanted("Открываю Telegram, сэр.") and cache.wanted("Секунду, сэр.")   # предел
+
+
+@pytest.mark.parametrize("text,tool,args", [
+    ("какая погода?", "weather", {}),
+    ("Джарвис, погода", "weather", {}),
+    ("какая сейчас погода", "weather", {}),
+    ("какая погода в Алматы", "weather", {"city": "алматы"}),
+    ("погода в Шимкенте", "weather", {"city": "шимкенте"}),
+    ("разбуди в 7:30", "clock", {"action": "alarm_set", "when": "7:30"}),
+    ("поставь будильник на 7 утра", "clock", {"action": "alarm_set", "when": "7 утра"}),
+    ("разбуди меня в 6", "clock", {"action": "alarm_set", "when": "6"}),
+])
+def test_weather_and_alarm_are_quick(text, tool, args):
+    m = q.match(text)
+    assert m is not None and (m.tool, m.args) == (tool, args)
+
+
+@pytest.mark.parametrize("text", [
+    "какая погода была вчера в Москве и почему",   # длинный вопрос — пусть решает Gemini
+    "разбуди в семь тридцать",                      # время словами не разбираем
+    "разбуди меня",                                  # без времени
+    "будет ли дождь завтра",
+])
+def test_weather_and_alarm_not_overreach(text):
+    assert q.match(text) is None
+
+
+def test_weather_reply_is_spoken_not_silent():
+    m = q.match("какая погода")
+    assert q.silent(m, "Погода, Шымкент: Ясно.") is False

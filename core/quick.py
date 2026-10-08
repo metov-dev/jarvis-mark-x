@@ -167,6 +167,12 @@ _RULES: list[tuple[str, str | None, dict, str]] = [
     (r"выключи будильник|я (встал|проснулся)|хватит звенеть", "clock", {"action": "alarm_stop"}, ""),
     (r"отложи( будильник)?( на (?P<m>\d+) минут[уы]?)?", "clock",
      {"action": "alarm_snooze", "minutes": "@m"}, ""),
+    (r"(поставь |заведи |поставь мне )?будильник (на |в )(?P<t>[\d: ]{1,5}( утра| вечера| ночи| дня)?)|"
+     r"разбуди( меня)? (на |в )(?P<t2>[\d: ]{1,5}( утра| вечера| ночи| дня)?)", "clock",
+     {"action": "alarm_set", "when": "@t"}, ""),
+    # Погода: короткий вопрос — сразу ответ, без раздумий облака.
+    (r"(какая |что с )?(сейчас |сегодня )?погода( сейчас| сегодня| на улице)?", "weather", {}, ""),
+    (r"(какая )?(сейчас |сегодня )?погода в (?P<city>[\w -]{2,30})", "weather", {"city": "@city"}, ""),
     # Глаза.
     (r"смотри на экран|будь моими глазами", "eyes", {"action": "open", "source": "screen"}, "eyes_open"),
     (r"закрой глаза|не смотри|хватит смотреть", "eyes", {"action": "close"}, ""),
@@ -214,7 +220,21 @@ def _query(v: str) -> str | None:
     return v if 1 < len(v) <= 100 and not re.search(r"\bи\b", v) else None
 
 
-_CHECK = {"v": _level, "v2": _level, "d": _duration, "app": _app, "song": _song, "yq": _query, "ch": _query}
+def _alarm_time(v: str) -> str | None:
+    from core.clock import parse_hhmm
+    try:
+        parse_hhmm(v)
+    except ValueError:
+        return None
+    return v
+
+
+def _city(v: str) -> str | None:
+    v = v.strip()
+    return v if 2 < len(v) <= 30 and not re.search(r"(и|был\w*|будет|завтра|вчера)", v) else None
+
+
+_CHECK = {"t": _alarm_time, "t2": _alarm_time, "city": _city, "v": _level, "v2": _level, "d": _duration, "app": _app, "song": _song, "yq": _query, "ch": _query}
 
 
 def match(text: str) -> Quick | None:
@@ -269,7 +289,7 @@ def failed(result) -> bool:
 
 
 # Где ответ нужен словами — само содержимое: время, что играет, сколько осталось.
-_ANSWERS = {("clock", "now"), ("clock", "timer_list"), ("clock", "stopwatch_stop"),
+_ANSWERS = {("weather", ""), ("clock", "alarm_set"), ("clock", "now"), ("clock", "timer_list"), ("clock", "stopwatch_stop"),
             ("clock", "stopwatch_status"), ("music_player", "now_playing")}
 
 
