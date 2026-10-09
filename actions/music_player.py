@@ -472,6 +472,38 @@ def _find_youtube_direct_url(query: str) -> Optional[str]:
 
 
 # ─── Действия плеера ──────────────────────────────────────────────────────────
+# ── «Мой плейлист» ────────────────────────────────────────────────────────────
+# Раньше «поставь любимый плейлист» уходило в поиск Spotify и включало чужой
+# плейлист с похожим названием («Мой плейлист любимых песен» — Alina).
+LIKED_SONGS = "spotify:collection:tracks"
+_FAV_MARK = re.compile(r"^(мо[йяеиюё]\w*|любим\w*|лайк\w*|лайкнут\w*|избранн\w*|понравивш\w*|сохран[её]нн\w*)$")
+_FAV_FILL = re.compile(r"^(плейлист\w*|playlist|песн[июяе]|песен|музык\w*|трек\w*|из|в|с|все|мне)$")
+
+
+def is_favorite(query: str) -> bool:
+    """«мой плейлист», «любимые песни», «мои лайки» — без названия чего-то ещё."""
+    words = re.findall(r"\w+", (query or "").lower().replace("ё", "е"))
+    if not any(_FAV_MARK.match(w) for w in words):
+        return False
+    return all(_FAV_MARK.match(w) or _FAV_FILL.match(w) for w in words)
+
+
+def load_api_keys() -> dict:
+    try:
+        from core.paths import load_api_keys as _load
+        return _load()
+    except Exception:
+        return {}
+
+
+def favorite_playlist() -> str:
+    """Spotify URI любимого плейлиста: из настроек, иначе «Любимые треки»."""
+    saved = str(load_api_keys().get("spotify_favorite_playlist") or "").strip()
+    if saved.startswith("spotify:"):
+        return saved
+    return _https_to_spotify_uri(saved) or LIKED_SONGS
+
+
 def _spotify_now():
     from core import media_session
     return media_session.now_playing("spotify")
@@ -511,13 +543,15 @@ def _play(query: str = "", playlist_url: str = "", player=None) -> str:
 
     # ── Плейлист по ссылке ────────────────────────────────────────────────
     if playlist_url:
-        uri = _https_to_spotify_uri(playlist_url)
+        uri = playlist_url if playlist_url.startswith("spotify:") else _https_to_spotify_uri(playlist_url)
         if uri and installed:
             before = _spotify_now()
             _open_spotify_uri(uri)
             np = _started(before)
             return f"Включил плейлист: {_say_track(np)}." if np else \
                 "Открыл плейлист в Spotify, но воспроизведение не началось — нажмите Play."
+        if not playlist_url.startswith("http"):
+            return "Spotify не установлен — свой плейлист включить не могу, сэр."
         browser_control({"action": "go_to", "url": playlist_url}, player=player)
         return "Открыл плейлист в браузере."
 
@@ -667,6 +701,13 @@ def music_player(parameters: dict, player=None) -> str:
                 video_player.control("pause")
         except Exception as exc:
             _logger.debug("Пауза фильма перед музыкой: %s", exc)
+
+    if action == "play" and not parameters.get("playlist_url") and is_favorite(query):
+        fav = favorite_playlist()
+        res = sp.play_favorite(fav)
+        if res is not None:
+            return res
+        return _play("", fav, player)
 
     if action in ("play", "mood") and not parameters.get("playlist_url"):
         q = f"{query} плейлист" if action == "mood" and query else query

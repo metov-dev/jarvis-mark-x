@@ -240,6 +240,40 @@ def play_uri(uri: str) -> tuple[bool, str]:
     return True, ""
 
 
+def play_favorite(uri: str) -> str | None:
+    """Любимый плейлист владельца. «Любимые треки» Web API не принимает как
+    контекст — играем список треков. None — пусть включит приложение Spotify."""
+    if not ready() or not is_premium():
+        return None
+    try:
+        if uri == "spotify:collection:tracks":
+            r = _req("GET", "/me/tracks", params={"limit": 50})
+            uris = [i["track"]["uri"] for i in r.json().get("items", []) if i.get("track")]                 if r.status_code < 300 else []
+            if not uris:
+                return None
+            dev = _wake_device()
+            if not dev:
+                return "Spotify не запустился на компьютере."
+            r = _req("PUT", f"/me/player/play?device_id={dev}", json={"uris": uris})
+            ok = r.status_code < 300
+        else:
+            ok, err = play_uri(uri)
+            if not ok:
+                logger.warning("Любимый плейлист через API: %s — открываю в приложении", err)
+                return None
+        for _ in range(8):
+            time.sleep(0.25)
+            np = now_playing()
+            if ok and np and np["playing"]:
+                return f"Включил ваш плейлист, сэр. Играет {_say(np)}."
+        return None
+    except PermissionError:
+        return None
+    except Exception as exc:
+        logger.warning("Spotify API (любимый плейлист): %s", exc)
+        return None
+
+
 def now_playing() -> dict | None:
     r = _req("GET", "/me/player/currently-playing")
     if r.status_code == 204 or not r.content:
