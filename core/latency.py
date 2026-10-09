@@ -84,7 +84,9 @@ class LatencyTracker:
         self._sink = sink                  # куда дублировать строку (UI), опционально
         # Сентинел — None, а не 0.0: perf_counter() имеет право вернуть ноль,
         # и тогда «отметка есть» стало бы неотличимо от «отметки нет».
-        self._last_frame: float | None = None   # пишется из аудио-колбэка
+        self._last_frame: float | None = None   # конец речи — точка отсчёта хода
+        self._seen: float | None = None         # последний громкий кадр вообще
+        self.last_turn: dict[str, int] = {}     # этапы последнего хода, мс от конца речи
         self._heard: float | None = None
         self._answered: float | None = None
         self._played: float | None = None
@@ -106,9 +108,14 @@ class LatencyTracker:
         now = time.perf_counter()
         # Пауза длиннее _TURN_GAP_SEC означает новую реплику: закрываем прошлый
         # ход, чтобы его хвост не приписался к следующему вопросу.
-        if self._last_frame is not None and (now - self._last_frame) > _TURN_GAP_SEC:
+        if self._seen is not None and (now - self._seen) > _TURN_GAP_SEC:
             self._reset_turn()
-        self._last_frame = now
+        self._seen = now
+        # Модель уже отвечает — значит, человек договорил. Шум комнаты и эхо
+        # после этого больше не двигают точку отсчёта: раньше двигали, и в
+        # журнале были «отвечает −2600 мс» — задержки не измерялись вовсе.
+        if self._answered is None and not self._marks:
+            self._last_frame = now
 
     def mark_transcript(self) -> None:
         """Пришёл первый фрагмент расшифровки сказанного."""
@@ -158,6 +165,7 @@ class LatencyTracker:
             # проактивной — Джарвис заговорит сам, без вопроса. Мерить её от
             # давнего кадра микрофона значит вписать в статистику минуты.
             self._last_frame = None
+            self._seen = None
 
     def _report(self) -> None:
         base = self._last_frame
@@ -177,6 +185,15 @@ class LatencyTracker:
 
         if not parts:
             return
+
+        self.last_turn = {name: _ms(base, when) for when, name in sorted(points)}
+        if self._tool_ms:
+            self.last_turn["инструменты"] = self._tool_ms
+        try:
+            from core.blackbox import box
+            box().event("timing", **self.last_turn)
+        except Exception:
+            pass
 
         line = "⏱  " + " · ".join(parts)
         if self._tool_ms:

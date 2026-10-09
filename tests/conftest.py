@@ -54,6 +54,9 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     # Готовые фразы — не в настоящий кэш голоса и без озвучки по сети.
     import core.quick as quick
     monkeypatch.setattr(quick, "_cache", quick.VoiceCache(d / "voice_cache"))
+    # Чёрный ящик — не в настоящую папку данных владельца.
+    import core.blackbox as blackbox
+    monkeypatch.setattr(blackbox, "_box", blackbox.BlackBox(d / "blackbox"))
     monkeypatch.setenv("JARVIS_QUICK_PREWARM", "0")
     monkeypatch.setenv("JARVIS_KEYS_CHECK", "0")          # проверка ключей при запуске ходит в сеть
     import core.contacts as contacts_mod

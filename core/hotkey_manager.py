@@ -4,6 +4,7 @@ Uses native Win32 user32.RegisterHotKey for zero-latency, reliable system-wide s
 - F8: Wake JARVIS / Bring to front / Unmute and listen
 - Ctrl+Shift+J: Alternative wake shortcut
 - Ctrl+Shift+M: Toggle mute globally from any app/game
+- F9: «Джарвис ошибся» — сохранить последние секунды микрофона для разбора
 """
 
 import ctypes
@@ -16,6 +17,7 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 VK_F8 = 0x77
+VK_F9 = 0x78
 VK_J = 0x4A
 VK_M = 0x4D
 
@@ -30,9 +32,11 @@ WM_QUIT = 0x0012
 class GlobalHotkeyManager:
     """Listens for global Windows shortcuts in a background daemon thread."""
 
-    def __init__(self, on_wake: Optional[Callable] = None, on_mute: Optional[Callable] = None):
+    def __init__(self, on_wake: Optional[Callable] = None, on_mute: Optional[Callable] = None,
+                 on_report: Optional[Callable] = None):
         self.on_wake = on_wake
         self.on_mute = on_mute
+        self.on_report = on_report
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._thread_id: Optional[int] = None
@@ -45,7 +49,7 @@ class GlobalHotkeyManager:
         self._running = True
         self._thread = threading.Thread(target=self._message_loop, name="GlobalHotkeys", daemon=True)
         self._thread.start()
-        logger.info("[Hotkeys] Global hotkeys active: F8 / Ctrl+Shift+J (Wake), Ctrl+Shift+M (Mute)")
+        logger.info("[Hotkeys] Global hotkeys active: F8 / Ctrl+Shift+J (Wake), Ctrl+Shift+M (Mute), F9 (ошибка)")
 
     def stop(self):
         self._running = False
@@ -65,6 +69,8 @@ class GlobalHotkeyManager:
         user32.RegisterHotKey(None, 2, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_J)
         # ID 3: Ctrl+Shift+M
         user32.RegisterHotKey(None, 3, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_M)
+        # ID 4: F9 — «Джарвис ошибся»
+        user32.RegisterHotKey(None, 4, MOD_NOREPEAT, VK_F9)
 
         msg = wintypes.MSG()
         try:
@@ -86,9 +92,16 @@ class GlobalHotkeyManager:
                                 self.on_mute()
                             except Exception as exc:
                                 logger.warning("Error in on_mute callback: %s", exc)
+                    elif hotkey_id == 4:
+                        if self.on_report:
+                            try:
+                                self.on_report()
+                            except Exception as exc:
+                                logger.warning("Error in on_report callback: %s", exc)
                 user32.TranslateMessage(ctypes.byref(msg))
                 user32.DispatchMessageW(ctypes.byref(msg))
         finally:
             user32.UnregisterHotKey(None, 1)
             user32.UnregisterHotKey(None, 2)
             user32.UnregisterHotKey(None, 3)
+            user32.UnregisterHotKey(None, 4)

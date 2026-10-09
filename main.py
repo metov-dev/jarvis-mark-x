@@ -78,6 +78,12 @@ logging.basicConfig(
 logger = logging.getLogger('JARVIS')
 
 
+def _blackbox():
+    """Чёрный ящик голосового круга (core/blackbox.py): события и F9."""
+    from core.blackbox import box
+    return box()
+
+
 def _log_unhandled(exc_type, exc, tb):
     if issubclass(exc_type, KeyboardInterrupt):
         # Ctrl+C в консоли прилетает в обработчик Qt: раньше это писалось
@@ -1956,6 +1962,7 @@ class Jarvis:
             self._hotkey_mgr = GlobalHotkeyManager(
                 on_wake=self._on_hotkey_wake,
                 on_mute=self._on_hotkey_mute,
+                on_report=self._on_hotkey_report,
             )
             self._hotkey_mgr.start()
         except Exception as _e:
@@ -1967,9 +1974,17 @@ class Jarvis:
         self._pc_link = self._start_pc_link()
         atexit.register(self.cleanup)
 
+    def _on_hotkey_report(self):
+        """F9 — «Джарвис ошибся»: последние секунды микрофона и события — в чёрный ящик."""
+        from core.blackbox import box
+        wav = box().report_miss()
+        self.ui.write_log("SYS: ошибка отмечена — запись сохранена для разбора" if wav
+                          else "SYS: ошибку отметить не удалось")
+
     def _on_hotkey_wake(self):
         """Реакция на глобальный хоткей F8 / Ctrl+Shift+J из любого приложения или игры."""
         logger.info("[Hotkey] Нажата горячая клавиша вызова Джарвиса (F8)")
+        _blackbox().event("wake", by="hotkey")
         if self.ui.muted:
             self.ui.toggle_mute()
         self.wake()
@@ -2221,7 +2236,9 @@ class Jarvis:
         Будим, приглушаем музыку и отдаём в Gemini звук с самого имени —
         иначе «Джарвис, открой ютуб» дошло бы как «…ютуб»."""
         if self.ui.muted:
+            _blackbox().event("wake_ignored", reason="микрофон выключен")
             return
+        _blackbox().event("wake", by="name", speaking=bool(self._is_speaking))
         if self._is_speaking:
             # Перебили по имени: замолкаем сразу, недоговорённое выбрасываем.
             logger.info("Перебили словом «Джарвис» — замолкаю")
@@ -3218,8 +3235,11 @@ class Jarvis:
 
         preroll = collections.deque(maxlen=10)
 
+        bb = _blackbox()
+
         def callback(indata, frames, time_info, status):
             self._mic_last_cb = time.monotonic()
+            bb.feed(indata.tobytes())
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
             if jarvis_speaking or time.monotonic() < self._echo_guard_until:
@@ -3710,8 +3730,10 @@ class Jarvis:
                 _end(fc.name, ok)
         text = quick.reply_for(q, result)
         silent = quick.silent(q, result)
+        took_ms = int((time.perf_counter() - started) * 1000)
         logger.info("⚡ Мгновенно: «%s» → %s %s → «%s»%s (%d мс)", heard[:80], q.tool or "-",
-                    q.args, text, " [звуком]" if silent else "", int((time.perf_counter() - started) * 1000))
+                    q.args, text, " [звуком]" if silent else "", took_ms)
+        _blackbox().event("quick", heard=heard, tool=q.tool, args=q.args, answer=text, ms=took_ms)
         if echo:                                  # набранное окно чата уже показало само
             self.ui.write_log(f"Вы: {heard}")
         self.ui.write_log(f"Джарвис: {'✓ ' + text if silent else text}")
@@ -4208,6 +4230,7 @@ class Jarvis:
                             if not was_addressed:
                                 if full_in:
                                     logger.info("Не ко мне, молчу: «%s»", full_in[:80])
+                                    _blackbox().event("not_to_me", heard=full_in)
                                 self._release_ducking()
                                 continue
 
@@ -4243,6 +4266,8 @@ class Jarvis:
                             # иначе неотличимы: «Не ко мне» журнал писал, а ход,
                             # принятый и оставшийся без ответа, не оставлял следа.
                             if full_in or full_out:
+                                _blackbox().event("turn", heard=full_in, answer=full_out[:300],
+                                                  by_name=by_name)
                                 logger.info("Ход: «%s» → «%s»%s", full_in[:120], full_out[:120],
                                             "" if full_out else "  [ответа нет]")
                             self._remember_turn(full_in, full_out)
