@@ -275,6 +275,7 @@ class CallSession:
         self._turn_open = False            # Gemini сейчас отвечает (ход начат, turn_complete не пришёл)
         self._say_buf = ""                 # расшифровка ответа, ещё не отданная в синтез
         self._say_q: deque[str] = deque()  # куски, ждущие синтеза
+        self._say_event = asyncio.Event()
         self._say_first = True             # следующий кусок — первый в ходе
         self._say_text_at = 0.0
         self._speaking = False             # кусок синтезируется прямо сейчас
@@ -580,7 +581,7 @@ class CallSession:
         if not pcm48:
             return
         if not self.first_voice_sec and self._picked_up_at:
-            self.first_voice_sec = time.monotonic() - self._picked_up_at
+            self.first_voice_sec = max(0.001, time.monotonic() - self._picked_up_at)
             logger.info("Звонок: Джарвис заговорил через %.1f с после ответа", self.first_voice_sec)
         if self._user_spoke_at:
             self.reply_delays.append(time.monotonic() - self._user_spoke_at)
@@ -594,6 +595,7 @@ class CallSession:
         self._turn += 1
         self._turn_open = False
         self._say_q.clear()
+        self._say_event.clear()
         self._say_buf, self._say_first = "", True
 
     def _say(self, text: str, final: bool = False, force: bool = False):
@@ -606,6 +608,7 @@ class CallSession:
         if chunks:
             self._say_first = False
             self._say_q.extend(chunks)
+            self._say_event.set()
         if final:
             self._say_first = True
 
@@ -624,7 +627,11 @@ class CallSession:
                         and time.monotonic() - self._say_text_at > SAY_IDLE_SEC):
                     self._say("", force=True)          # расшифровка затихла на точке — не ждём конца хода
                 if not self._say_q:
-                    await asyncio.sleep(0.02)
+                    self._say_event.clear()
+                    try:
+                        await asyncio.wait_for(self._say_event.wait(), timeout=0.02)
+                    except asyncio.TimeoutError:
+                        pass
                     continue
             text, turn = self._say_q.popleft(), self._turn
             self._speaking = True
@@ -663,6 +670,8 @@ class CallSession:
         except Exception as exc:
             logger.warning("Звонок: запасной голос не озвучил: %s", exc)
             return
+        finally:
+            self.fallback = None  # договорил этот ход Edge — дальше голос Gemini
         if pcm and turn == self._turn:
             self._voice_out(self.up(pcm))
 

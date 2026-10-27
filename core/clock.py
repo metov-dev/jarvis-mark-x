@@ -172,6 +172,7 @@ class Clock:
         self._ring_started = 0.0
         self._ring_spoken = 0.0
         self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
         self._load()
 
     # ── хранение ──────────────────────────────────────────────────────────────
@@ -508,18 +509,22 @@ class Clock:
             threading.Timer(12.0, lambda: self._ringing is a and self.sound.play("alarm", loop=True)).start()
 
     def start(self):
-        if self._thread:
+        if self._thread and self._thread.is_alive():
             return
+        self._stop.clear()
 
         def run():
-            while True:
-                time.sleep(0.5)
+            while not self._stop.wait(0.5):
                 try:
                     self.tick()
                 except Exception as exc:
                     logger.warning("Часы: %s", exc)
         self._thread = threading.Thread(target=run, daemon=True, name="clock")
         self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        self._thread = None
 
 
 class Sound:

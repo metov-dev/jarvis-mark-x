@@ -171,7 +171,7 @@ def стенд(tmp_path, monkeypatch):
                            monkeypatch=monkeypatch)
 
 
-async def _прогнать(стенд, frames, script, timeout=5.0):
+async def _прогнать(стенд, frames, script, timeout=5.0, min_bytes=0):
     """Крутит все четыре задачи круга, пока ответ не доиграет."""
     j = стенд.jarvis
     session = _Session(script)
@@ -197,8 +197,13 @@ async def _прогнать(стенд, frames, script, timeout=5.0):
             tg.create_task(j._play_audio())
 
             deadline = asyncio.get_event_loop().time() + timeout
-            while (len(стенд.out.written) < expected_audio
-                   and asyncio.get_event_loop().time() < deadline):
+            while asyncio.get_event_loop().time() < deadline:
+                if min_bytes > 0:
+                    if sum(len(x) for x in стенд.out.written) >= min_bytes:
+                        await asyncio.sleep(0.05)
+                        break
+                elif len(стенд.out.written) >= expected_audio:
+                    break
                 await asyncio.sleep(0.01)
 
             raise asyncio.CancelledError    # снимаем всю группу разом
@@ -351,7 +356,7 @@ async def test_с_голосом_fish_звук_gemini_не_играет(стен
         _resp(said="Всё в норме, сэр.", turn_complete=True),
     ]
 
-    await _прогнать(стенд, [_loud()], script)
+    await _прогнать(стенд, [_loud()], script, min_bytes=600)
 
     assert b"\x01\x02" * 100 not in стенд.out.written, "звук Gemini дошёл до динамиков"
     assert поддельный_fish == ["Всё в норме, сэр."], "Fish должен получить текст ответа"
@@ -363,6 +368,7 @@ async def test_с_голосом_fish_звук_gemini_не_играет(стен
 @pytest.mark.asyncio
 async def test_fish_начинает_говорить_до_конца_хода(стенд, поддельный_fish):
     """Первое предложение уходит в синтез по своей точке, а не по turn_complete."""
+    стенд.monkeypatch.setattr(jarvis_main, "_quick_allowed", lambda: False)
     j = стенд.jarvis
     j.session = _Session([
         _resp(heard="какая погода"),

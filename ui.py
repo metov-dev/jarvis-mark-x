@@ -1922,11 +1922,27 @@ class MainWindow(QMainWindow):
         """)
         self._header.set_accent(rgb)
 
+    def _stop_timers(self):
+        for attr in ("_island_tmr", "_tmr", "_chat_timer", "_metric_timer"):
+            tmr = getattr(self, attr, None)
+            if tmr is not None:
+                try:
+                    tmr.stop()
+                except Exception:
+                    pass
+        isl = getattr(self, "_island", None)
+        if isl is not None:
+            try:
+                isl.close()
+            except Exception:
+                pass
+
     def closeEvent(self, event):
         """Крестик — выход из программы. Раньше он прятал окно в трей, и
         Джарвис «не выключался»: процесс жил и слушал дальше. Спрятать окно
         и оставить Джарвиса слушать — «Свернуть в трей»."""
         event.accept()
+        self._stop_timers()
         self.force_quit()
 
     def hide_to_tray(self):
@@ -1944,6 +1960,7 @@ class MainWindow(QMainWindow):
 
     def force_quit(self):
         """Полное закрытие приложения по команде из меню трея."""
+        self._stop_timers()
         if hasattr(self, "tray") and self.tray:
             self.tray.hide()
         QApplication.quit()

@@ -11,10 +11,13 @@ from core import settings as S  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _env_back():
+def _env_back(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARVIS_SETTINGS", str(tmp_path / "settings.json"))
     """S.set пишет прямо в os.environ — после теста возвращаем как было."""
     keys = [o.env for o in S.OPTS if o.env]
     before = {k: os.environ.get(k) for k in keys}
+    for k in keys:
+        monkeypatch.delenv(k, raising=False)
     yield
     S._subs.clear()
     for k, v in before.items():
@@ -27,6 +30,7 @@ def _env_back():
 def test_defaults_env_and_saved(monkeypatch):
     monkeypatch.delenv("MIC_RMS_THRESHOLD", raising=False)
     monkeypatch.setenv("JARVIS_AWAKE_SEC", "60")                   # задано в .env и не тронуто
+    monkeypatch.setenv("JARVIS_BRIEFING", "0")
     v = S.load()
     assert v["mic"] == "" and v["mic_threshold"] == 150 and v["awake_sec"] == 60 and v["briefing"] is False
     got = []
@@ -109,6 +113,7 @@ def page(monkeypatch):
                         else ["Динамики (Realtek)", "Наушники (AirPods)"])
     monkeypatch.setattr("core.paths.save_api_keys", lambda d: True)
     import ui_settings as U
+    monkeypatch.setattr(U, "cameras", lambda: [(0, "Камера 1"), (1, "Камера 2")])
     d = U.SettingsDialog(None, probe=False)
     d.show()
     app.processEvents()
@@ -149,6 +154,7 @@ def test_settings_page_keeps_unplugged_device(page, monkeypatch):
     d, app = page
     S.set("mic", "Старый USB-микрофон")
     import ui_settings as U
+    monkeypatch.setattr(U, "cameras", lambda: [(0, "Камера 1"), (1, "Камера 2")])
     d2 = U.SettingsDialog(None, probe=False)
     assert d2.mic.currentData() == "Старый USB-микрофон" and "не подключён" in d2.mic.currentText()
     d2.deleteLater()

@@ -148,10 +148,112 @@ _WEATHER_CACHE: dict[str, tuple[float, str]] = {}
 _CACHE_TTL_SEC = 300  # 5 минут
 
 
+_CITY_COORDS = {
+    "moscow": (55.7558, 37.6173),
+    "saint petersburg": (59.9343, 30.3351),
+    "almaty": (43.2389, 76.8897),
+    "astana": (51.1694, 71.4491),
+    "shymkent": (42.3417, 69.5901),
+    "tashkent": (41.2995, 69.2401),
+    "bishkek": (42.8746, 74.5698),
+    "kyzylorda": (44.8488, 65.4999),
+    "minsk": (53.9006, 27.5590),
+    "kyiv": (50.4501, 30.5234),
+    "baku": (40.4093, 49.8671),
+    "tbilisi": (41.7151, 44.8271),
+    "dubai": (25.2048, 55.2708),
+}
+
+_WMO_MAP = {
+    0: (113, "Clear"),
+    1: (116, "Partly cloudy"),
+    2: (116, "Partly cloudy"),
+    3: (122, "Overcast"),
+    45: (248, "Fog"),
+    48: (260, "Freezing fog"),
+    51: (266, "Light drizzle"),
+    53: (266, "Light drizzle"),
+    55: (266, "Light drizzle"),
+    61: (296, "Light rain"),
+    63: (302, "Moderate rain"),
+    65: (308, "Heavy rain"),
+    71: (326, "Light snow"),
+    73: (332, "Moderate snow"),
+    75: (338, "Heavy snow"),
+    80: (353, "Light rain shower"),
+    81: (356, "Moderate or heavy rain shower"),
+    82: (356, "Moderate or heavy rain shower"),
+    85: (368, "Light snow"),
+    86: (371, "Heavy snow"),
+    95: (389, "Moderate or heavy rain with thunder"),
+    96: (392, "Moderate or heavy rain with thunder"),
+    99: (395, "Moderate or heavy rain with thunder"),
+}
+
+
+def _fetch_open_meteo(city_en: str) -> dict:
+    key = city_en.lower()
+    coords = _CITY_COORDS.get(key)
+    if not coords:
+        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(city_en)}&count=1"
+        with urllib.request.urlopen(geo_url, timeout=3) as resp:
+            geo_data = json.loads(resp.read().decode())
+        results = geo_data.get("results")
+        if not results:
+            raise ValueError(f"Open-Meteo: координаты для {city_en} не найдены")
+        coords = (results[0]["latitude"], results[0]["longitude"])
+
+    lat, lon = coords
+    url = (
+        f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+        "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m"
+        "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto"
+    )
+    with urllib.request.urlopen(url, timeout=4) as resp:
+        om = json.loads(resp.read().decode())
+
+    curr = om.get("current", {})
+    code, desc = _WMO_MAP.get(curr.get("weather_code", 0), (113, "Clear"))
+    daily = om.get("daily", {})
+    days_data = []
+    times = daily.get("time", [])
+    for i in range(min(3, len(times))):
+        d_code_val = (daily.get("weather_code") or [0])[i]
+        d_code, d_desc = _WMO_MAP.get(d_code_val, (113, "Clear"))
+        max_t = str(int(round((daily.get("temperature_2m_max") or [0])[i])))
+        min_t = str(int(round((daily.get("temperature_2m_min") or [0])[i])))
+        rain_p = str(int(round((daily.get("precipitation_probability_max") or [0])[i])))
+        days_data.append({
+            "maxtempC": max_t,
+            "mintempC": min_t,
+            "hourly": [{
+                "weatherDesc": [{"value": d_desc}],
+                "chanceofrain": rain_p,
+                "weatherCode": str(d_code),
+            }]
+        })
+
+    return {
+        "current_condition": [{
+            "temp_C": str(int(round(curr.get("temperature_2m", 0)))),
+            "FeelsLikeC": str(int(round(curr.get("apparent_temperature", 0)))),
+            "weatherDesc": [{"value": desc}],
+            "humidity": str(int(round(curr.get("relative_humidity_2m", 0)))),
+            "windspeedKmph": str(int(round(curr.get("wind_speed_10m", 0)))),
+            "weatherCode": str(code),
+        }],
+        "weather": days_data,
+    }
+
+
 def _fetch_wttr(city_en: str) -> dict:
     url = f"https://wttr.in/{urllib.parse.quote(city_en)}?format=j1"
-    with urllib.request.urlopen(url, timeout=4) as resp:
-        return json.loads(resp.read().decode())
+    try:
+        with urllib.request.urlopen(url, timeout=4) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as exc:
+        logger.debug("wttr.in сбой (%s) — переключаюсь на Open-Meteo", exc)
+        return _fetch_open_meteo(city_en)
 
 
 def weather_action(parameters: dict, player=None) -> str:

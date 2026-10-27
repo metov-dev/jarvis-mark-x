@@ -6,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 def test_x_quits_and_tray_button_only_hides(monkeypatch):
+    monkeypatch.setenv("JARVIS_ISLAND", "0")
     from PyQt6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])
     import ui as jarvis_ui
@@ -13,17 +14,23 @@ def test_x_quits_and_tray_button_only_hides(monkeypatch):
     quits = []
     monkeypatch.setattr(QApplication, "quit", staticmethod(lambda: quits.append(1)))
     win.tray = SimpleNamespace(isVisible=lambda: True, hide=lambda: None, showMessage=lambda *a: None)
-    win.show()
-    app.processEvents()
+    try:
+        win.show()
+        app.processEvents()
 
-    win.hide_to_tray()                       # «Свернуть в трей» — Джарвис живёт дальше
-    assert not win.isVisible() and quits == []
+        win.hide_to_tray()                       # «Свернуть в трей» — Джарвис живёт дальше
+        assert not win.isVisible() and quits == []
 
-    win.show()
-    win.close()                              # крестик
-    app.processEvents()
-    assert quits == [1]
-    assert not win.isVisible()
+        win.show()
+        win.close()                              # крестик
+        app.processEvents()
+        assert quits == [1]
+        assert not win.isVisible()
+    finally:
+        win.close()
+        win.hide()
+        win.deleteLater()
+        app.processEvents()
 
 
 def test_mainloop_runs_quit_hooks_and_exits(monkeypatch):

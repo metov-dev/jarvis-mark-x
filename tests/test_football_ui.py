@@ -96,19 +96,23 @@ def test_every_football_view_draws(island):
 
 
 def test_window_routes_football_log_to_capsule(monkeypatch):
+    monkeypatch.setenv("JARVIS_ISLAND", "1")
     from PyQt6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])
     import ui as jarvis_ui
     win = jarvis_ui.JarvisUI("face.png")
+    isl = win._island
     try:
-        isl = win._island
         win.write_log(f"SYS: ⚽ ГОЛ: {GOAL}")
         app.processEvents()
-        assert isl.model.banners[-1].kind == "goal" and isl.model.match.home_score == "1"
+        assert isl is not None and isl.model.banners[-1].kind == "goal" and isl.model.match.home_score == "1"
     finally:
-        isl.close()
+        win.close()
+        if isl is not None:
+            isl.close()
         win.hide()
         win.deleteLater()
+        app.processEvents()
 
 
 # ── данные для экрана ────────────────────────────────────────────────────────

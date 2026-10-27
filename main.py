@@ -4052,6 +4052,16 @@ class Jarvis:
         def decide() -> bool:
             return self.is_awake() or named.is_set()
 
+        def check_addressed():
+            nonlocal addressed, held
+            if addressed is not True and decide():
+                addressed = True
+                for chunk in held:
+                    if get_voice_provider() != "fish":
+                        self._queue_answer_audio(chunk)
+                held = []
+                fish_flush()
+
         # Мгновенный ответ (core/quick.py): частую команду Джарвис выполнил и
         # озвучил сам — речь и вызовы Gemini на неё глушатся, пока человек не
         # заговорит снова (или _QUICK_HOLD_SEC после конца хода).
@@ -4147,13 +4157,7 @@ class Jarvis:
                             if not named.is_set() and _has_wake_word("".join(in_buf)):
                                 named.set()
                                 self.wake()
-                                if addressed is not True:
-                                    addressed = True
-                                    for chunk in held:
-                                        if get_voice_provider() != "fish":
-                                            self._queue_answer_audio(chunk)
-                                    held = []
-                                    fish_flush()
+                                check_addressed()
                             if quick_on and not quick.match("".join(in_buf)):
                                 # «Громче… и открой хром» — фраза шире команды:
                                 # остальное решает Gemini, громкость второй раз не трогаем.
@@ -4170,8 +4174,7 @@ class Jarvis:
                         self._latency.mark("gemini-звук")
                         if self._turn_done_event and self._turn_done_event.is_set():
                             self._turn_done_event.clear()
-                        if addressed is None:
-                            addressed = decide()
+                        check_addressed()
                         if get_voice_provider() == "fish":
                             # Говорит Fish — звук Gemini выбрасываем, иначе
                             # два голоса произнесут один ответ одновременно.
@@ -4188,8 +4191,7 @@ class Jarvis:
                             self._latency.mark("текст")
                             out_buf.append(sc.output_transcription.text)
                             fish_text += sc.output_transcription.text
-                            if addressed is None:
-                                addressed = decide()
+                            check_addressed()
                             if addressed:
                                 # Субтитр идёт вслед за речью, а не после неё.
                                 sub = getattr(self.ui, "set_subtitle", None)
@@ -4198,8 +4200,7 @@ class Jarvis:
                             fish_flush()
 
                         if sc.turn_complete:
-                            if addressed is None:
-                                addressed = decide()
+                            check_addressed()
                             if quick_timer:
                                 quick_timer.cancel()
                                 quick_timer = None

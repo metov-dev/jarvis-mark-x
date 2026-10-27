@@ -49,6 +49,9 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     import memory.conversation as conv
     import memory.memory_manager as mm
     d = tmp_path / "voice_memory"
+    appdata_fake = d / "appdata"
+    appdata_fake.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("APPDATA", str(appdata_fake))
     # Выученное на голосе владельца слово — не из настоящей папки данных.
     monkeypatch.setenv("JARVIS_WAKE_ALIASES", str(d / "wake_aliases.json"))
     # Готовые фразы — не в настоящий кэш голоса и без озвучки по сети.
@@ -99,4 +102,14 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     monkeypatch.setattr(shared, "OUTBOX_FILE", d / "sync_outbox.json")
     monkeypatch.setattr(shared, "SHARED_FILE", d / "shared.json")
     monkeypatch.setattr(shared, "_config", lambda: ("", ""))   # без сервера, пока тест не задаст
+    monkeypatch.setenv("JARVIS_BREAK_REMINDER", "0")
+    monkeypatch.setenv("JARVIS_CLOCK", "0")
     yield
+    import core.clock as clock_mod
+    if clock_mod._clock is not None:
+        clock_mod._clock.stop()
+        clock_mod._clock = None
+    import core.break_reminder as br_mod
+    if br_mod._instance is not None:
+        br_mod._instance.stop()
+        br_mod._instance = None

@@ -407,10 +407,12 @@ def test_main_window_starts_and_opens_panel(monkeypatch):
         app.processEvents()
         assert not win._browser.isVisible() and win._hud.side_px == 0
     finally:
+        win.close()
         if win._island is not None:
             win._island.close()                     # фоновый опрос капсулы не должен пережить тест
         win.hide()
         win.deleteLater()
+        app.processEvents()
 
 
 def test_tab_is_safe_from_many_threads(chrome):

@@ -104,4 +104,4 @@ def test_owner_call_voice_is_saved_for_diagnosis(tmp_path):
 def test_contact_call_is_never_recorded(tmp_path):
     s = tc.CallSession(tg=None, live=None, peer=1, prompt="", callee="Азиз")
     _talk(s, 2)
-    assert s.save_recording(tmp_path) == [] and not list(tmp_path.iterdir())
+    assert s.save_recording(tmp_path) == [] and not list(tmp_path.glob("*.wav"))

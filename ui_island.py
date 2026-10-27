@@ -1311,7 +1311,8 @@ class Island(QWidget):
         md = ev.mimeData()
         for url in md.urls() if md.hasUrls() else []:
             if url.isLocalFile():
-                return url.toLocalFile()
+                import os
+                return os.path.normpath(url.toLocalFile())
         return ""
 
     def dragEnterEvent(self, ev):
