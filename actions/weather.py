@@ -319,19 +319,29 @@ def weather_action(parameters: dict, player=None) -> str:
                 "rain": rain, "kind": weather_kind(noon.get("weatherCode")),
             })
 
-        result = (
-            f"Погода, {city}: {desc_ru}. "
-            f"Температура {temp_c}°C, ощущается как {feels}°C. "
-            f"Влажность {humidity}%, ветер {wind} км/ч."
-        )
-        if days:
-            parts = []
-            for d in days:
-                line = f"{d['name']}: {d['desc'].lower() or 'без описания'}, от {d['min']} до {d['max']}°C"
-                if d["rain"] >= 30:
-                    line += f", вероятность дождя {d['rain']}%"
-                parts.append(line + ".")
-            result += " Прогноз: " + " ".join(parts)
+        day_req = str(parameters.get("day") or "").lower()
+        if day_req == "tomorrow" and len(days) > 1:
+            d = days[1]
+            rain_str = f", вероятность дождя {d['rain']}%" if d["rain"] >= 30 else ""
+            result = f"Погода на завтра, {city}: {d['desc']}, от {d['min']} до {d['max']}°C{rain_str}."
+        elif day_req == "day_after" and len(days) > 2:
+            d = days[2]
+            rain_str = f", вероятность дождя {d['rain']}%" if d["rain"] >= 30 else ""
+            result = f"Погода на послезавтра, {city}: {d['desc']}, от {d['min']} до {d['max']}°C{rain_str}."
+        else:
+            result = (
+                f"Погода, {city}: {desc_ru}. "
+                f"Температура {temp_c}°C, ощущается как {feels}°C. "
+                f"Влажность {humidity}%, ветер {wind} км/ч."
+            )
+            if days:
+                parts = []
+                for d in days:
+                    line = f"{d['name']}: {d['desc'].lower() or 'без описания'}, от {d['min']} до {d['max']}°C"
+                    if d["rain"] >= 30:
+                        line += f", вероятность дождя {d['rain']}%"
+                    parts.append(line + ".")
+                result += " Прогноз: " + " ".join(parts)
 
         last_forecast[city.lower()] = {
             "city": city, "temp": temp_c, "feels": feels, "desc": desc_ru,

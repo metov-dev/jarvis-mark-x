@@ -606,6 +606,12 @@ def clock_tool(p: dict) -> str:
         return c.timer_list()
     if a == "timer_cancel":
         return c.timer_cancel(which)
+    if a == "timer_modify":
+        sec = parse_duration(p)
+        if not sec:
+            return "На сколько переставить таймер, сэр?"
+        c.timer_cancel(which)
+        return c.timer_set(sec, str(p.get("label") or ""))
     if a == "timer_add":
         return c.timer_add(parse_duration(p), which)
     if a == "timer_pause":

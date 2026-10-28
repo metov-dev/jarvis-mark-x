@@ -2379,6 +2379,12 @@ class Jarvis:
         except Exception:
             pass
 
+        try:
+            from core.dialog_context import context
+            context().record(heard="", tool=name, args=args, reply=outcome)
+        except Exception as exc:
+            logger.debug("dialog_context record action error: %s", exc)
+
         def write():
             try:
                 from memory.conversation import log_turn
@@ -3738,6 +3744,11 @@ class Jarvis:
             self.ui.write_log(f"Вы: {heard}")
         self.ui.write_log(f"Джарвис: {'✓ ' + text if silent else text}")
         self._remember_turn(heard, text)
+        try:
+            from core.dialog_context import context
+            context().record(heard=heard, tool=q.tool, args=q.args, reply=text, reply_key=q.reply)
+        except Exception as exc:
+            logger.debug("dialog_context record error: %s", exc)
         if silent:
             self._play_done_sound()               # сделано — звук и галочка, без «Есть, сэр»
         elif text:

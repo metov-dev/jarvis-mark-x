@@ -113,3 +113,5 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     if br_mod._instance is not None:
         br_mod._instance.stop()
         br_mod._instance = None
+    import core.dialog_context as dc_mod
+    dc_mod.context().clear()

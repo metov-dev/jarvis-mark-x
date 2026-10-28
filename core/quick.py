@@ -161,6 +161,14 @@ _RULES: list[tuple[str, str | None, dict, str]] = [
      r"какой (сегодня )?день", "clock", {"action": "now"}, ""),
     (r"(поставь |запусти |заведи |засеки )?таймер на (?P<d>.+)", "clock",
      {"action": "timer_set", "duration": "@d"}, ""),
+    (r"(отмени|сбрось|удали|выключи|останови) таймер|таймер стоп|стоп таймер", "clock",
+     {"action": "timer_cancel"}, ""),
+    (r"(поставь )?таймер на паузу|приостанови таймер", "clock",
+     {"action": "timer_pause"}, ""),
+    (r"возобнови таймер|сними таймер с паузы|продолжи таймер", "clock",
+     {"action": "timer_resume"}, ""),
+    (r"(добавь|прибавь) (к таймеру )?(?P<d>.+)( к таймеру)?", "clock",
+     {"action": "timer_add", "duration": "@d"}, ""),
     (r"сколько (осталось|там) (на таймере|таймеру)", "clock", {"action": "timer_list"}, ""),
     (r"(запусти |включи |засеки )?секундомер", "clock", {"action": "stopwatch_start"}, ""),
     (r"(останови|стоп|выключи) секундомер|секундомер стоп", "clock", {"action": "stopwatch_stop"}, ""),
@@ -275,6 +283,13 @@ def match(text: str) -> Quick | None:
             else:
                 out[k] = v
         return Quick(tool, out, reply, t)
+    try:
+        from core.dialog_context import context
+        ctx_quick = context().resolve(t)
+        if ctx_quick is not None:
+            return ctx_quick
+    except Exception as exc:
+        logger.debug("dialog_context resolve error: %s", exc)
     return None
 
 
@@ -289,8 +304,10 @@ def failed(result) -> bool:
 
 
 # Где ответ нужен словами — само содержимое: время, что играет, сколько осталось.
-_ANSWERS = {("weather", ""), ("clock", "alarm_set"), ("clock", "now"), ("clock", "timer_list"), ("clock", "stopwatch_stop"),
-            ("clock", "stopwatch_status"), ("music_player", "now_playing")}
+_ANSWERS = {("weather", ""), ("clock", "alarm_set"), ("clock", "now"), ("clock", "timer_list"),
+            ("clock", "timer_cancel"), ("clock", "timer_add"), ("clock", "timer_modify"),
+            ("clock", "timer_pause"), ("clock", "timer_resume"),
+            ("clock", "stopwatch_stop"), ("clock", "stopwatch_status"), ("music_player", "now_playing")}
 
 
 def voice_for_actions() -> bool:
