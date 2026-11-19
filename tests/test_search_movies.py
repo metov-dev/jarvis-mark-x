@@ -21,7 +21,7 @@ def test_search_nothing_found_does_not_open_browser(monkeypatch):
 
 
 def test_spotify_uri_from_search(monkeypatch):
-    monkeypatch.setattr(web_find, "search", lambda q, limit=8: [
+    monkeypatch.setattr(web_find, "search", lambda q, limit=8, **kw: [
         Hit("Believer", "https://open.spotify.com/intl-ru/track/0pqnGHJpmpxLKifKRmU6WP", "")])
     assert web_find.spotify_uri("Believer", "track") == "spotify:track:0pqnGHJpmpxLKifKRmU6WP"
 

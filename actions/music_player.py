@@ -24,6 +24,7 @@ import platform
 import subprocess
 import time
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -44,6 +45,9 @@ _API_CONFIG = _BASE / "config" / "api_keys.json"
 # Кэш Spotify access token (срок 1 час)
 _SPOTIFY_TOKEN: Optional[str] = None
 _SPOTIFY_TOKEN_EXPIRES: float = 0.0
+# Spotify Web API отвечает 403 «Active premium subscription required for the
+# owner of the app» — поиск закрыт на часы; не тратим на него время каждый раз.
+_SPOTIFY_BLOCKED_UNTIL: float = 0.0
 
 # ─── Опциональная зависимость pyautogui ───────────────────────────────────────
 try:
@@ -344,6 +348,9 @@ def _spotify_search_track_uri(query: str) -> Optional[str]:
     """
     Ищет трек через Spotify Web API и возвращает его URI (spotify:track:ID).
     """
+    global _SPOTIFY_BLOCKED_UNTIL
+    if time.time() < _SPOTIFY_BLOCKED_UNTIL:
+        return None
     token = _get_spotify_token()
     if not token:
         return None
@@ -373,6 +380,12 @@ def _spotify_search_track_uri(query: str) -> Optional[str]:
                     if variant.lower() in track_name or track_name in variant.lower():
                         return item.get("uri")
                 return items[0].get("uri")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 403:
+                _SPOTIFY_BLOCKED_UNTIL = time.time() + 6 * 3600
+                _logger.info("Spotify API: поиск закрыт (403, нужен Premium у владельца приложения) — ищу без него")
+                return None
+            _logger.debug("Spotify API поиск: %s", exc)
         except Exception as exc:
             _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
             continue
@@ -477,6 +490,11 @@ def _find_youtube_direct_url(query: str) -> Optional[str]:
 # плейлист с похожим названием («Мой плейлист любимых песен» — Alina).
 LIKED_SONGS = "spotify:collection:tracks"
 _FAV_MARK = re.compile(r"^(мо[йяеиюё]\w*|любим\w*|лайк\w*|лайкнут\w*|избранн\w*|понравивш\w*|сохран[её]нн\w*)$")
+# «включи музыку», «хорошую музыку», «что-нибудь» — не название, искать нечего:
+# раньше это уходило в поиск по интернету и включало случайный трек за 17 с.
+_GENERIC = re.compile(r"^(музык\w*|музон\w*|музычк\w*|песн\w*|песен\w*|трек\w*|что|нибудь|что-нибудь|"
+                      r"как\w*|какую-нибудь|хорош\w*|классн\w*|крут\w*|любу\w*|норм\w*|нормальн\w*|"
+                      r"включи|поставь|давай|ну|мне|нам|чего|ничего|сам|выбери|на|твой|твою|вкус)$")
 _FAV_FILL = re.compile(r"^(плейлист\w*|playlist|песн[июяе]|песен|музык\w*|трек\w*|из|в|с|все|мне)$")
 
 
@@ -486,6 +504,12 @@ def is_favorite(query: str) -> bool:
     if not any(_FAV_MARK.match(w) for w in words):
         return False
     return all(_FAV_MARK.match(w) or _FAV_FILL.match(w) for w in words)
+
+
+def is_generic(query: str) -> bool:
+    """Просят просто музыку, без названия: «хорошую музыку», «что-нибудь»."""
+    words = re.findall(r"[\w-]+", (query or "").lower().replace("ё", "е"))
+    return bool(words) and all(_GENERIC.match(w) for w in words)
 
 
 def load_api_keys() -> dict:
@@ -566,8 +590,7 @@ def _play(query: str = "", playlist_url: str = "", player=None) -> str:
 
     # ── Конкретный трек / исполнитель / настроение ───────────────────────
     if installed:
-        uri = _spotify_search_track_uri(query) or web_find.spotify_uri(query, "track") \
-            or web_find.spotify_uri(query)
+        uri = _spotify_search_track_uri(query) or web_find.spotify_uri(query, "track")
         if uri:
             before = _spotify_now()
             _open_spotify_uri(uri)
@@ -702,7 +725,7 @@ def music_player(parameters: dict, player=None) -> str:
         except Exception as exc:
             _logger.debug("Пауза фильма перед музыкой: %s", exc)
 
-    if action == "play" and not parameters.get("playlist_url") and is_favorite(query):
+    if action == "play" and not parameters.get("playlist_url") and (is_favorite(query) or is_generic(query)):
         fav = favorite_playlist()
         res = sp.play_favorite(fav)
         if res is not None:

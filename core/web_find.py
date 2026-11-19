@@ -26,11 +26,12 @@ class Hit:
     snippet: str = ""
 
 
-def search(query: str, limit: int = 8, region: str = "ru-ru") -> list[Hit]:
+def search(query: str, limit: int = 8, region: str = "ru-ru", backend: str = "auto",
+           timeout: int = 8) -> list[Hit]:
     try:
         from ddgs import DDGS
-        with DDGS(timeout=8) as d:
-            rows = d.text(query, region=region, max_results=limit) or []
+        with DDGS(timeout=timeout) as d:
+            rows = d.text(query, region=region, max_results=limit, backend=backend) or []
         hits = [Hit(r.get("title", ""), r.get("href", ""), r.get("body", "")) for r in rows]
         if hits:
             return hits
@@ -38,6 +39,8 @@ def search(query: str, limit: int = 8, region: str = "ru-ru") -> list[Hit]:
         pass
     except Exception as exc:
         logger.debug("ddgs: %s", exc)
+    if backend != "auto":
+        return []          # выбран конкретный поисковик — второй круг через DDG не нужен (+8 с)
     try:
         return _html_search(query, limit, region)
     except Exception as exc:
@@ -68,13 +71,22 @@ def _html_search(query: str, limit: int, region: str) -> list[Hit]:
 _SPOTIFY_RE = re.compile(r"open\.spotify\.com/(?:intl-[a-z]{2}/)?(track|album|playlist|artist)/([A-Za-z0-9]{22})")
 
 
+# Замер 19.11.2026: на «site:open.spotify.com …» отвечает только Яндекс (~5 с);
+# DuckDuckGo, Brave, Google, Mojeek, Bing — «нет результатов». «auto» перебирал
+# их все подряд, и «включи музыку» шло 17 с.
+SPOTIFY_BACKEND = "yandex"
+
+
 def spotify_uri(query: str, kind: str | None = None) -> str | None:
-    """Ссылка «spotify:track:…» по названию — без Spotify API и Premium."""
-    site = f"open.spotify.com/{kind}" if kind else "open.spotify.com"
-    for hit in search(f"site:{site} {query}", limit=8):
+    """Ссылка «spotify:track:…» по названию — без Spotify API и Premium.
+    Один поиск: нужный вид (kind) — первым, иначе любая ссылка Spotify."""
+    found = []
+    for hit in search(f"site:open.spotify.com {query}", limit=8, backend=SPOTIFY_BACKEND, timeout=5):
         m = _SPOTIFY_RE.search(hit.url)
-        if m and (kind is None or m.group(1) == kind):
-            return f"spotify:{m.group(1)}:{m.group(2)}"
+        if m:
+            found.append((m.group(1), m.group(2)))
+    for k, sid in sorted(found, key=lambda f: kind is not None and f[0] != kind):
+        return f"spotify:{k}:{sid}"
     return None
 
 
