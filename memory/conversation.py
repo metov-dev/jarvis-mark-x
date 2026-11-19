@@ -251,9 +251,12 @@ def _gemini_json(prompt: str) -> dict:
     from core.onboarding import ensure_gemini_key
     from google import genai
     client = genai.Client(api_key=ensure_gemini_key(interactive=False))
-    resp = client.models.generate_content(
-        model=MODEL, contents=prompt,
-        config={"response_mime_type": "application/json", "temperature": 0.2})
+    from core import text_models
+    resp = text_models.call(
+        lambda model: client.models.generate_content(
+            model=model, contents=prompt,
+            config={"response_mime_type": "application/json", "temperature": 0.2}),
+        text_models.LITE, first=MODEL, what="Память")
     return json.loads(resp.text or "{}")
 
 

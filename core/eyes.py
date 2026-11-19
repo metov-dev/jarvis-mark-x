@@ -247,11 +247,15 @@ def ask_yes_no(jpeg: bytes, condition: str) -> bool:
     key = vision._get_api_key()
     if not key:
         raise RuntimeError("нет ключа Gemini")
-    resp = vision._client(key).models.generate_content(
-        model=WATCH_MODEL,
-        contents=[types.Part.from_bytes(data=jpeg, mime_type="image/jpeg"),
-                  f"Посмотри на снимок экрана. Выполнено ли условие: «{condition}»? "
-                  "Ответь одним словом: ДА или НЕТ."])
+    from core import text_models
+    client = vision._client(key)
+    resp = text_models.call(
+        lambda model: client.models.generate_content(
+            model=model,
+            contents=[types.Part.from_bytes(data=jpeg, mime_type="image/jpeg"),
+                      f"Посмотри на снимок экрана. Выполнено ли условие: «{condition}»? "
+                      "Ответь одним словом: ДА или НЕТ."]),
+        text_models.LITE, first=WATCH_MODEL, what="Глаза")
     return (resp.text or "").strip().lower().startswith("да")
 
 

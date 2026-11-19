@@ -108,10 +108,14 @@ def ask_model(jpeg: bytes, task: str, reported: str) -> tuple[bool | None, str]:
               "действительно сделано? Если на экране окно ошибки, пустое окно, не та программа или "
               "ничего не поменялось — это не сделано.\n"
               'Ответь JSON: {"ok": true или false, "note": "коротко по-русски, что видно, если не сделано"}')
-    resp = vision._client(key).models.generate_content(
-        model=MODEL,
-        contents=[types.Part.from_bytes(data=jpeg, mime_type="image/jpeg"), prompt],
-        config=types.GenerateContentConfig(response_mime_type="application/json"))
+    from core import text_models
+    client = vision._client(key)
+    resp = text_models.call(
+        lambda model: client.models.generate_content(
+            model=model,
+            contents=[types.Part.from_bytes(data=jpeg, mime_type="image/jpeg"), prompt],
+            config=types.GenerateContentConfig(response_mime_type="application/json")),
+        text_models.LITE, first=MODEL, what="Проверка экрана")
     return parse_verdict(resp.text or "")
 
 
