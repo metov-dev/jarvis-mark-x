@@ -1971,6 +1971,11 @@ def _covered_by_other_app(win) -> bool:
     """Окно Джарвиса закрыто окнами других программ (Windows): в двух из
     трёх точек окна сверху лежит чужое окно. Свои окна (карточки, браузер
     Джарвиса) не в счёт."""
+    from PyQt6.QtGui import QGuiApplication
+    # Без настоящего экрана (offscreen) окна нет на рабочем столе: WindowFromPoint
+    # вернёт чужое окно в тех же координатах, и капсула выскочит зря.
+    if QGuiApplication.platformName() != "windows":
+        return False
     try:
         import ctypes
         import os

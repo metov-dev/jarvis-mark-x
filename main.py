@@ -4574,7 +4574,7 @@ class Jarvis:
                     logger.error("Сессия Gemini оборвалась: %s", reason)
                 logger.debug("Подробности разрыва", exc_info=True)
 
-                if "1008" in low or "leaked" in low:
+                if _key_blocked(reason):
                     logger.error("Ключ Gemini заблокирован (1008) — создайте новый: "
                                  "https://aistudio.google.com/app/apikey")
                     self.ui.write_log("SYS: ❌ API-ключ Gemini заблокирован. Получите новый (aistudio.google.com) и впишите на экране «Ключи»")
@@ -4645,6 +4645,17 @@ def _root_error_text(exc: BaseException) -> str:
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         exc = exc.exceptions[0]
     return f"{type(exc).__name__}: {exc}"
+
+
+def _key_blocked(reason: str) -> bool:
+    """Ключ Gemini действительно заблокирован. Код 1008 сам по себе об этом не
+    говорит: тем же кодом Gemini закрывает сессию при простое («Session closed
+    due to client inactivity»). Раньше на это Джарвис писал «ключ заблокирован»
+    и бросал переподключение — и молчал до перезапуска."""
+    low = reason.lower()
+    if "inactivity" in low:
+        return False
+    return "leaked" in low or ("1008" in low and ("api key" in low or "permission" in low))
 
 
 # ─── Точка входа ──────────────────────────────────────────────────────────────

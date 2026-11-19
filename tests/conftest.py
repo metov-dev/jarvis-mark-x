@@ -115,3 +115,15 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
         br_mod._instance = None
     import core.dialog_context as dc_mod
     dc_mod.context().clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_hard_exit(monkeypatch):
+    """os._exit в коде (выход из окна, «выключись») убивал весь pytest без
+    итога и с кодом 0 — прогон выглядел зелёным, хотя половина тестов не шла."""
+    import os
+    import traceback
+
+    def _refuse(code=0):
+        raise RuntimeError("os._exit(%r) в тесте:\n%s" % (code, "".join(traceback.format_stack(limit=8))))
+    monkeypatch.setattr(os, "_exit", _refuse)

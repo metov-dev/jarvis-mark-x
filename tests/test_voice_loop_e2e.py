@@ -1198,3 +1198,11 @@ async def test_хлопки_выключены_в_настройках(стен�
     j = стенд.jarvis
     j._on_double_clap()
     assert j._intro_task is None
+
+
+def test_простой_сессии_1008_не_считается_блокировкой_ключа():
+    # Gemini закрывает простаивающую сессию кодом 1008 — это не повод бросать
+    # переподключение и пугать «ключ заблокирован».
+    assert not jarvis_main._key_blocked("APIError: 1008 None. Session closed due to client inactivity.")
+    assert jarvis_main._key_blocked("APIError: 1008 None. Your API key was reported as leaked.")
+    assert not jarvis_main._key_blocked("gaierror: [Errno 11001] getaddrinfo failed")
