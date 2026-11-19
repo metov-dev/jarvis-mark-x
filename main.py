@@ -3082,8 +3082,13 @@ class Jarvis:
         top = max(counts.items(), key=lambda kv: kv[1])
         if top[0].startswith("тихо"):
             logger.debug("Микрофон: тишина в комнате (RMS < %s, %d кадров)", MIC_RMS_THRESHOLD, top[1])
-        else:
-            logger.info("Микрофон гейт: %s (%d кадров)", top[0], top[1])
+            return
+        # В журнал — только смена причины. Раньше «жду слово «Джарвис»» писалось
+        # каждые 5 с всё время сна: 10 тыс. из 13 тыс. строк, и настоящие ошибки
+        # вытеснялись ротацией журнала.
+        same = top[0] == getattr(self, "_gate_last_reason", None)
+        self._gate_last_reason = top[0]
+        (logger.debug if same else logger.info)("Микрофон гейт: %s (%d кадров)", top[0], top[1])
 
     def _push_level(self, value: float):
         """Отдаёт громкость окну. Зовётся из аудио-потока, поэтому дёшево и
