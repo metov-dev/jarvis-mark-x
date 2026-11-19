@@ -27,7 +27,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -1285,6 +1285,7 @@ class Schedule:
                 # Только записи расписания: в calls.json жила ещё и история
                 # звонков ({"version", "calls"}) — её ключи становились «звонками».
                 self.items = [i for i in data if isinstance(i, dict) and "time" in i] if isinstance(data, list) else []
+                self._drop_expired()
             except Exception as exc:
                 logger.warning("Расписание звонков: %s", exc)
 
@@ -1315,6 +1316,38 @@ class Schedule:
         self.items = [i for i in self.items if w and w not in (i["time"], str(i["id"]), i["topic"])] if w else []
         self._save()
         return before - len(self.items)
+
+    def _drop_expired(self, today: str | None = None) -> None:
+        """Разовый звонок, чей день прошёл (ПК был выключен), — убрать. Раньше он
+        жил вечно, и капсула месяц показывала «Звонок в 09:00» за 10 октября."""
+        today = today or datetime.now().date().isoformat()
+        keep = [i for i in self.items if not (i.get("repeat") == "once" and str(i.get("date", "")) < today)]
+        if len(keep) != len(self.items):
+            logger.info("Расписание звонков: убрал прошедшие разовые (%d)", len(self.items) - len(keep))
+            self.items = keep
+            self._save()
+
+    def upcoming(self, now: datetime | None = None) -> dict | None:
+        """Ближайший будущий звонок: ежедневный — сегодня или завтра, разовый — по дате."""
+        now = now or datetime.now()
+        best = None
+        for it in self.items:
+            try:
+                h, m = parse_hhmm(it["time"])
+            except Exception:
+                continue
+            at = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            if it.get("repeat") == "once":
+                try:
+                    d = datetime.fromisoformat(str(it.get("date"))).date()
+                except ValueError:
+                    continue
+                at = at.replace(year=d.year, month=d.month, day=d.day)
+            elif at <= now:
+                at += timedelta(days=1)
+            if at > now and (best is None or at < best[0]):
+                best = (at, it)
+        return best[1] if best else None
 
     def due(self, now: datetime | None = None) -> list[dict]:
         """Звонки, чьё время пришло (в пределах 5 минут — если ПК проснулся чуть позже)."""

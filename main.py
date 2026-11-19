@@ -4584,6 +4584,7 @@ class Jarvis:
 
         self._model_idx = 0
         self._model_fallback_at = 0.0
+        quiet_reconnect = False
         while True:
             connected = 0.0
             low = ""
@@ -4593,7 +4594,11 @@ class Jarvis:
             self._live_model = LIVE_MODELS[self._model_idx]
             try:
                 print("[ДЖАРВИС] 🔌 Подключение к Gemini...")
-                self.ui.set_state("RECONNECTING")
+                # Плановое переподключение (простой, GoAway) — без «НЕТ СВЯЗИ» на
+                # капсуле: пока Джарвис спит, Gemini закрывает сессию каждые 2 мин,
+                # и капсула мигала красным, хотя связь была.
+                if not quiet_reconnect:
+                    self.ui.set_state("RECONNECTING")
                 config = self._build_config()
 
                 async with (
@@ -4725,7 +4730,8 @@ class Jarvis:
                     self.ui.write_log(f"SYS: 😵 Слишком много запросов: Gemini просит паузу — "
                                       f"вернусь через {delay:.0f} с")
             logger.info("Переподключение через %.1f с", delay)
-            if self._go_away_at is None:          # плановое — без «переподключаюсь» на экране
+            quiet_reconnect = self._go_away_at is not None or "inactivity" in low
+            if not quiet_reconnect:               # плановое — без «переподключаюсь» на экране
                 self.ui.set_state("RECONNECTING")
             await asyncio.sleep(delay)
 

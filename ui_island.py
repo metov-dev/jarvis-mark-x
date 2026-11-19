@@ -632,9 +632,8 @@ def poll_timer() -> tuple[str, float]:
         logger.debug("Капсула, таймер сна: %s", exc)
     try:
         from core import tg_call
-        items = tg_call.schedule().items
-        if items:
-            nxt = min(items, key=lambda i: (i.get("date", ""), i["time"]))
+        nxt = tg_call.schedule().upcoming()
+        if nxt:
             return f"Звонок в {nxt['time']}", 0.0
     except Exception as exc:
         logger.debug("Капсула, звонки: %s", exc)
