@@ -117,13 +117,15 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     dc_mod.context().clear()
 
 
-@pytest.fixture(autouse=True)
-def _no_hard_exit(monkeypatch):
+
+def pytest_configure(config):
     """os._exit в коде (выход из окна, «выключись») убивал весь pytest без
-    итога и с кодом 0 — прогон выглядел зелёным, хотя половина тестов не шла."""
+    итога и с кодом 0 — прогон выглядел зелёным, хотя часть тестов не шла.
+    На весь прогон, а не на тест: фоновый поток может позвать его и после теста."""
     import os
     import traceback
 
     def _refuse(code=0):
-        raise RuntimeError("os._exit(%r) в тесте:\n%s" % (code, "".join(traceback.format_stack(limit=8))))
-    monkeypatch.setattr(os, "_exit", _refuse)
+        stack = "".join(traceback.format_stack(limit=8))
+        raise RuntimeError(f"os._exit({code!r}) в тесте:{chr(10)}{stack}")
+    os._exit = _refuse
