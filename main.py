@@ -4318,7 +4318,8 @@ class Jarvis:
             if self._go_away_at is not None:
                 logger.info("Плановое переподключение к Gemini (%s)", e)
                 raise _PlannedReconnect(str(e)) from e
-            logger.error("Приём оборвался: %s", e)
+            # Простой: Gemini сам закрывает сессию, пока Джарвис спит, — это не сбой.
+            (logger.info if "inactivity" in str(e).lower() else logger.error)("Приём оборвался: %s", e)
             # Пробрасываем наверх: TaskGroup свернётся, и сработает
             # реконнект в `run()` — с handle'ом возобновления, так что
             # разговор продолжится с того же места.
@@ -4575,6 +4576,8 @@ class Jarvis:
                 low = reason.lower()
                 if self._go_away_at is not None:
                     logger.info("Сессия Gemini закрыта по плану (GoAway) — переподключаюсь")
+                elif "inactivity" in low:
+                    logger.info("Сессия Gemini закрыта за простой — переподключаюсь")
                 else:
                     logger.error("Сессия Gemini оборвалась: %s", reason)
                 logger.debug("Подробности разрыва", exc_info=True)
