@@ -40,6 +40,7 @@ if sys.platform == "win32":
 import asyncio
 import collections
 import json
+import random
 import re
 import threading
 import time
@@ -438,6 +439,11 @@ _FOLLOWUPS = int(os.getenv("JARVIS_FOLLOWUPS", "4"))
 # Сколько звука до пробуждения отдать в Gemini: имя и начало команды —
 # «Джарвис, открой ютуб» говорят на одном дыхании. 32 кадра по 64 мс ≈ 2 с.
 _WAKE_PREROLL_FRAMES = 32
+# Позвали одним словом «Джарвис» и замолчали — через столько секунд звучит
+# готовая фраза из кэша («Слушаю, сэр»), без Gemini и синтеза. 0 — выключено.
+_WAKE_ACK_SEC = float(os.getenv("JARVIS_WAKE_ACK_SEC", "0.7"))
+# Столько громких кадров после имени (~64 мс каждый) — значит, команда идёт дальше.
+_WAKE_ACK_SPEECH_FRAMES = 4
 
 
 def _device_is_silent(index: int, seconds: float = 0.05, need_signal: bool = True) -> bool:
@@ -1944,6 +1950,9 @@ class Jarvis:
         self._clap = None                         # два хлопка → интро (core/clap.py)
         self._intro_task: asyncio.Task | None = None
         self._wake_ring = collections.deque(maxlen=_WAKE_PREROLL_FRAMES)
+        self._wake_hold: list[bytes] = []      # звук с имени, пока решаем: ответить сразу или ждать команду
+        self._wake_hold_loud = 0
+        self._wake_hold_until = 0.0
 
         self.ui.on_text_command = self._on_text_command
         self.ui.on_intro_skipped = self._on_intro_skipped
@@ -2244,11 +2253,41 @@ class Jarvis:
             logger.info("Перебили словом «Джарвис» — замолкаю")
             self._drop_pending_speech()
             self.set_speaking(False)
+        interrupted = bool(self._is_speaking)
         self.wake()
         # Позвали под музыку — дальше речь должна доходить и поверх неё.
         self._open_through(_CORRECTION_SEC)
+        if _WAKE_ACK_SEC > 0 and not interrupted:
+            # Звук с имени пока держим у себя: замолчат — ответим готовой
+            # фразой сразу, заговорят дальше — отдадим в Gemini целиком.
+            self._wake_hold = list(self._wake_ring)
+            self._wake_ring.clear()
+            self._wake_hold_loud = 0
+            self._wake_hold_until = time.monotonic() + _WAKE_ACK_SEC
+            try:
+                asyncio.get_running_loop().call_later(_WAKE_ACK_SEC, self._wake_hold_done, put)
+                return
+            except RuntimeError:
+                self._wake_hold_until = 0.0         # не из событийного цикла — как раньше
+                self._wake_ring.extend(self._wake_hold)
         while self._wake_ring:
             put({"data": self._wake_ring.popleft(), "mime_type": "audio/pcm"})
+
+    def _wake_hold_done(self, put):
+        """Прошло _WAKE_ACK_SEC после имени. Раньше голое «Джарвис» шло в
+        Gemini, тот думал, а потом Fish синтезировал «К вашим услугам» —
+        ~5 с тишины. Теперь готовая фраза из кэша звучит сразу."""
+        self._wake_hold_until = 0.0
+        frames, self._wake_hold = self._wake_hold, []
+        if self._wake_hold_loud >= _WAKE_ACK_SPEECH_FRAMES:
+            for f in frames:                        # «Джарвис, открой ютуб» — Gemini слышит с имени
+                put({"data": f, "mime_type": "audio/pcm"})
+            return
+        phrase = random.choice(quick.PHRASES["here"])
+        logger.info("Позвали по имени — сразу «%s»", phrase)
+        _blackbox().event("wake_ack", phrase=phrase)
+        self.ui.write_log(f"Джарвис: {phrase}")
+        self._spawn(self._speak_fish(phrase))
 
     def _open_through(self, sec: float):
         """Окно поправки: музыка приглушена, микрофон пропускает речь поверх неё."""
@@ -3282,6 +3321,15 @@ class Jarvis:
                 self._local_wake.feed(pcm_bytes)
                 self._is_loud_enough(indata)          # только чтобы HUD дышал
                 self._note_gate("жду слово «Джарвис»")
+                preroll.clear()
+                return
+
+            # Только что позвали по имени: звук копим, пока не решено, ответить
+            # ли готовой фразой (см. _wake_hold_done).
+            if time.monotonic() < self._wake_hold_until:
+                self._wake_hold.append(pcm_bytes)
+                if _frame_rms(indata) >= MIC_RMS_THRESHOLD:
+                    self._wake_hold_loud += 1
                 preroll.clear()
                 return
 

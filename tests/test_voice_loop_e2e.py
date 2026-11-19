@@ -1206,3 +1206,39 @@ def test_простой_сессии_1008_не_считается_блокиро
     assert not jarvis_main._key_blocked("APIError: 1008 None. Session closed due to client inactivity.")
     assert jarvis_main._key_blocked("APIError: 1008 None. Your API key was reported as leaked.")
     assert not jarvis_main._key_blocked("gaierror: [Errno 11001] getaddrinfo failed")
+
+
+@pytest.mark.asyncio
+async def test_голое_имя_сразу_готовая_фраза_без_gemini(стенд, monkeypatch):
+    j = стенд.jarvis
+    monkeypatch.setattr(jarvis_main, "_WAKE_ACK_SEC", 0.05)
+    said = []
+
+    async def fake_speak(text):
+        said.append(text)
+    monkeypatch.setattr(j, "_speak_fish", fake_speak)
+    j._wake_ring.extend([b"name1", b"name2"])
+    sent = []
+    j._on_local_wake(sent.append)
+    await asyncio.sleep(0.15)
+    assert said and said[0] in jarvis_main.quick.PHRASES["here"]
+    assert sent == []                                   # имя в Gemini не ушло — второго ответа не будет
+
+
+@pytest.mark.asyncio
+async def test_имя_и_команда_уходят_в_gemini_с_имени(стенд, monkeypatch):
+    j = стенд.jarvis
+    monkeypatch.setattr(jarvis_main, "_WAKE_ACK_SEC", 0.05)
+    said = []
+
+    async def fake_speak(text):
+        said.append(text)
+    monkeypatch.setattr(j, "_speak_fish", fake_speak)
+    j._wake_ring.extend([b"name1", b"name2"])
+    sent = []
+    j._on_local_wake(sent.append)
+    j._wake_hold.append(b"cmd")                         # «…открой ютуб» — громко
+    j._wake_hold_loud = jarvis_main._WAKE_ACK_SPEECH_FRAMES
+    await asyncio.sleep(0.15)
+    assert not said
+    assert [x["data"] for x in sent] == [b"name1", b"name2", b"cmd"]
