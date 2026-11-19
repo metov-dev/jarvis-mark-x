@@ -183,8 +183,19 @@ DATA_DIR      = get_data_root()
 API_CONFIG    = get_config_path("api_keys.json")
 PROMPT_PATH   = get_prompt_path()
 
-# Модель Gemini Live с нативным аудио
-LIVE_MODEL        = "models/gemini-2.5-flash-native-audio-latest"
+# Модели Gemini Live — лестница: первая, а при квоте/отказе — следующая.
+# Замер 19.11.2026 на ключе владельца, наш конфиг, «Сколько сейчас времени?»:
+# 3.1 — первый звук 0.6 с (с вызовом clock 1.5 с), 2.5 — 1.9–2.8 с.
+LIVE_MODELS = tuple(m.strip() for m in os.getenv(
+    "JARVIS_LIVE_MODELS",
+    "models/gemini-3.1-flash-live-preview,models/gemini-2.5-flash-native-audio-latest",
+).split(",") if m.strip())
+LIVE_MODEL        = LIVE_MODELS[0]
+# Встроенный поиск Google на 3.1 с бесплатным ключом даёт 1011 «exceeded your
+# current quota» — сессия не поднимается вовсе. На этих моделях ищем своим поиском.
+_NO_SEARCH_MODELS = ("gemini-3.1-flash-live",)
+# Сколько сидеть на запасной модели, прежде чем снова попробовать первую.
+_MODEL_RETRY_TOP_SEC = 30 * 60
 CHANNELS          = 1
 SEND_SAMPLE_RATE  = 16000
 RECV_SAMPLE_RATE  = 24000
@@ -2510,7 +2521,8 @@ class Jarvis:
             # Встроенный Google Search: «кто выиграл», «курс доллара», новости —
             # модель ищет сама и отвечает по свежим данным. Сессия с ним не
             # подключается — run() отключает его и пробует без (_grounding).
-            tools=([{"google_search": {}}] if getattr(self, "_grounding", False) else [])
+            tools=([{"google_search": {}}] if getattr(self, "_grounding", False)
+                   and _model_allows_search(getattr(self, "_live_model", LIVE_MODEL)) else [])
                   + [{"function_declarations": TOOLS}],
             # Голосовая сессия без сжатия контекста живёт ~15 минут, потом
             # сервер её закрывает. Скользящее окно снимает лимит, а handle
@@ -4550,16 +4562,22 @@ class Jarvis:
         self._grounding = os.getenv("JARVIS_GOOGLE_SEARCH", "1") != "0"
         self._asr_hints = os.getenv("JARVIS_ASR_HINTS", "1") != "0"
 
+        self._model_idx = 0
+        self._model_fallback_at = 0.0
         while True:
             connected = 0.0
             low = ""
+            if self._model_idx and time.monotonic() - self._model_fallback_at > _MODEL_RETRY_TOP_SEC:
+                logger.info("Пробую снова основную модель %s", LIVE_MODELS[0])
+                self._model_idx, self._resume_handle = 0, None
+            self._live_model = LIVE_MODELS[self._model_idx]
             try:
                 print("[ДЖАРВИС] 🔌 Подключение к Gemini...")
                 self.ui.set_state("RECONNECTING")
                 config = self._build_config()
 
                 async with (
-                    client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
+                    client.aio.live.connect(model=self._live_model, config=config) as session,
                     asyncio.TaskGroup() as tg,
                 ):
                     connected = time.monotonic()
@@ -4654,6 +4672,15 @@ class Jarvis:
                 # это неудача, а не разрыв: пауза растёт.
                 failures += 1
                 delay = min(2 ** failures, _RECONNECT_MAX_SEC)
+                if _should_step_model(low, failures) and self._model_idx + 1 < len(LIVE_MODELS):
+                    # Квота или модель недоступна — следующая ступень, а не
+                    # бесконечные попытки в ту же стену.
+                    self._model_idx += 1
+                    self._model_fallback_at = time.monotonic()
+                    self._resume_handle = None       # handle чужой модели сервер не примет
+                    failures, delay = 0, 0.5
+                    logger.warning("Модель %s не подключается (%s) — перехожу на %s",
+                                   self._live_model, low[:120], LIVE_MODELS[self._model_idx])
                 # Сессия с поиском Google падает сразу — значит, модель его
                 # не принимает: работаем без него, чем не работать вовсе.
                 # Подсказки распознаванию (языки, слово «Джарвис») — новые поля
@@ -4701,6 +4728,21 @@ def _root_error_text(exc: BaseException) -> str:
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         exc = exc.exceptions[0]
     return f"{type(exc).__name__}: {exc}"
+
+
+def _model_allows_search(model: str) -> bool:
+    return not any(tag in model for tag in _NO_SEARCH_MODELS)
+
+
+def _should_step_model(low: str, failures: int) -> bool:
+    """Сразу после подключения сессия падает из-за квоты или недоступной
+    модели — пора на следующую ступень. Сетевые сбои (нет DNS) — не повод:
+    там упадёт любая модель."""
+    if any(k in low for k in ("getaddrinfo", "timed out", "network", "connection reset")):
+        return False
+    if any(k in low for k in _QUOTA_WORDS) or "not found" in low or "not supported" in low:
+        return True
+    return failures >= 3
 
 
 def _key_blocked(reason: str) -> bool:

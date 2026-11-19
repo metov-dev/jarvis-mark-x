@@ -1242,3 +1242,17 @@ async def test_имя_и_команда_уходят_в_gemini_с_имени(с�
     await asyncio.sleep(0.15)
     assert not said
     assert [x["data"] for x in sent] == [b"name1", b"name2", b"cmd"]
+
+
+def test_лестница_моделей_3_1_первой_и_без_поиска():
+    assert "3.1-flash-live" in jarvis_main.LIVE_MODELS[0] and len(jarvis_main.LIVE_MODELS) >= 2
+    assert not jarvis_main._model_allows_search("models/gemini-3.1-flash-live-preview")
+    assert jarvis_main._model_allows_search("models/gemini-2.5-flash-native-audio-latest")
+
+
+def test_на_квоте_следующая_модель_а_на_сети_нет():
+    step = jarvis_main._should_step_model
+    assert step("apierror: 1011 none. you exceeded your current quota", 1)
+    assert step("models/x is not found for api version v1beta", 1)
+    assert not step("gaierror: [errno 11001] getaddrinfo failed", 5)
+    assert not step("apierror: 1011 internal error", 1) and step("apierror: 1011 internal error", 3)
