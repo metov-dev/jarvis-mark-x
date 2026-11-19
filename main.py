@@ -105,6 +105,28 @@ sys.excepthook = _log_unhandled
 # Падение рабочего потока раньше было беззвучным: окно жило, Джарвис — нет.
 threading.excepthook = lambda args: _log_unhandled(args.exc_type, args.exc_value, args.exc_traceback)
 
+
+def _enable_crash_log() -> None:
+    """Падение ниже Python (звук PortAudio, Qt) убивало процесс без строки в
+    журнале: 19.11 в 23:32 Джарвис просто исчез. faulthandler пишет стек
+    всех потоков в crash.log в момент такого падения."""
+    if "pytest" in sys.modules:
+        return
+    try:
+        import faulthandler
+        from core.paths import get_user_data_dir
+        f = open(get_user_data_dir() / "crash.log", "a", encoding="utf-8")   # держим открытым до конца
+        f.write(f"
+=== запуск {time.strftime('%Y-%m-%d %H:%M:%S')} ===
+")
+        f.flush()
+        faulthandler.enable(file=f, all_threads=True)
+    except Exception as exc:
+        logger.debug("crash.log не включён: %s", exc)
+
+
+_enable_crash_log()
+
 # Настройки из экрана «Настройки» (core/settings.py) → в окружение ДО того, как
 # ниже прочитаются MIC_DEVICE, MIC_RMS_THRESHOLD, JARVIS_WAKE_MODE и др.
 try:

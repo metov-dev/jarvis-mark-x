@@ -2029,6 +2029,7 @@ class JarvisUI(MainWindow):
 
     def mainloop(self):
         code = self._app.exec()
+        _logger.info("Окно закрыто — выход (код %s)", code)
         # Окно закрыто — выходим целиком. Рабочие потоки (Gemini, Telegram,
         # звонки) не все демоны и держали процесс живым после крестика.
         for hook in getattr(self, "on_quit", []):
