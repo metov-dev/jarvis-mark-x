@@ -116,9 +116,7 @@ def _enable_crash_log() -> None:
         import faulthandler
         from core.paths import get_user_data_dir
         f = open(get_user_data_dir() / "crash.log", "a", encoding="utf-8")   # держим открытым до конца
-        f.write(f"
-=== запуск {time.strftime('%Y-%m-%d %H:%M:%S')} ===
-")
+        f.write(f"\n=== запуск {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
         f.flush()
         faulthandler.enable(file=f, all_threads=True)
     except Exception as exc:
