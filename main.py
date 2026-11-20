@@ -4550,6 +4550,7 @@ class Jarvis:
 
                     self.set_speaking(True)
                     self._latency.mark_playback()
+                    chunk = _boost_voice(chunk)
                     self._push_level(_chunk_level(chunk))
                     pending_write = asyncio.ensure_future(asyncio.to_thread(stream.write, chunk))
                     await asyncio.shield(pending_write)
@@ -4772,6 +4773,21 @@ def _root_error_text(exc: BaseException) -> str:
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         exc = exc.exceptions[0]
     return f"{type(exc).__name__}: {exc}"
+
+
+_VOICE_GAIN = float(os.getenv("JARVIS_VOICE_GAIN", "1.8"))   # голос громче музыки и шума
+
+
+def _boost_voice(chunk: bytes, gain: float = _VOICE_GAIN) -> bytes:
+    """Усилить кадр int16 с обрезкой по краям — без треска."""
+    if gain == 1.0 or not chunk:
+        return chunk
+    try:
+        import numpy as np
+        a = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) * gain
+        return np.clip(a, -32768, 32767).astype(np.int16).tobytes()
+    except Exception:
+        return chunk
 
 
 def _audio_blob(msg) -> types.Blob:
