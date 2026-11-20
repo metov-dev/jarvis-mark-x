@@ -110,8 +110,8 @@ class _Session:
         self.sent = []              # что ушло в облако
         self.client_content = []    # проактивные вбросы
 
-    async def send_realtime_input(self, media=None):
-        self.sent.append(media)
+    async def send_realtime_input(self, media=None, audio=None, video=None):
+        self.sent.append(media if media is not None else audio)
 
     async def send_client_content(self, **kwargs):
         self.client_content.append(kwargs)
@@ -229,7 +229,7 @@ async def test_полный_круг_голос_доходит_туда_и_об�
     session = await _прогнать(стенд, [_loud(), _loud()], script)
 
     assert session.sent, "кадры микрофона не дошли до сессии"
-    assert all(m["mime_type"] == "audio/pcm" for m in session.sent)
+    assert all(m.mime_type.startswith("audio/pcm") for m in session.sent)
     assert стенд.out.written == [b"\x01\x02" * 100, b"\x03\x04" * 100], \
         "ответ модели не доиграл в устройство"
 
@@ -806,6 +806,8 @@ async def test_обычный_микрофон_при_музыке_глушит�
 def test_какие_микрофоны_не_слышат_динамики(monkeypatch):
     names = {1: "AI Noise-cancelling Input (ASUS", 2: "Микрофон (Realtek(R) Audio)", 3: "Headset (AirPods)"}
     monkeypatch.setattr(jarvis_main.sd, "query_devices", lambda d=None, kind=None: {"name": names[d]})
+    monkeypatch.setattr(jarvis_main, "_output_is_headphones", lambda: False)
+    monkeypatch.setattr(jarvis_main, "_output_is_nc", lambda: True)     # звук идёт через выход ASUS
     assert jarvis_main._mic_hears_speakers(1) is False
     assert jarvis_main._mic_hears_speakers(3) is False
     assert jarvis_main._mic_hears_speakers(2) is True
@@ -1256,3 +1258,18 @@ def test_на_квоте_следующая_модель_а_на_сети_нет
     assert step("models/x is not found for api version v1beta", 1)
     assert not step("gaierror: [errno 11001] getaddrinfo failed", 5)
     assert not step("apierror: 1011 internal error", 1) and step("apierror: 1011 internal error", 3)
+
+
+def test_шумодав_asus_глух_к_колонкам_только_если_играет_через_его_выход(monkeypatch):
+    mic = "ai noise-cancelling input (asus utility)"
+    monkeypatch.setattr(jarvis_main.sd, "query_devices", lambda device=None, kind=None: {"name": mic})
+    monkeypatch.setattr(jarvis_main, "_output_is_headphones", lambda: False)
+    monkeypatch.setattr(jarvis_main, "_output_is_nc", lambda: False)
+    assert jarvis_main._mic_hears_speakers(2) is True        # Realtek-колонки: эхо есть
+    monkeypatch.setattr(jarvis_main, "_output_is_nc", lambda: True)
+    assert jarvis_main._mic_hears_speakers(2) is False       # звук через ASUS — вычтен
+
+
+def test_кадр_микрофона_уходит_как_audio_с_частотой():
+    blob = jarvis_main._audio_blob({"data": b"\x01\x02", "mime_type": "audio/pcm"})
+    assert blob.data == b"\x01\x02" and blob.mime_type == f"audio/pcm;rate={jarvis_main.SEND_SAMPLE_RATE}"

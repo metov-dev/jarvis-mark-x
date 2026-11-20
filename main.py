@@ -414,7 +414,23 @@ def _mic_hears_speakers(device) -> bool:
         name = str(info.get("name", "")).lower()
     except Exception:
         return True
+    if any(k in name for k in _NC_MIC_NAMES):
+        # Шумодав драйвера вычитает только звук, идущий через СВОЙ выход
+        # (ASUS «AI Noise-cancelling Output»). Играет Realtek-колонка — вычитать
+        # нечего, и Джарвис слышал себя и отвечал сам себе (журнал 20.11, 14:10).
+        return not _output_is_nc()
     return not any(k in name for k in _SPEAKER_DEAF_MICS)
+
+
+_NC_MIC_NAMES = ("noise-cancelling", "noise cancelling", "noise-canceling", "шумоподавлен", "ai noise")
+
+
+def _output_is_nc() -> bool:
+    try:
+        name = os.getenv("JARVIS_OUTPUT_DEVICE", "").strip() or str(sd.query_devices(kind="output").get("name", ""))
+    except Exception:
+        return False
+    return any(k in name.lower() for k in _NC_MIC_NAMES)
 
 
 # Сколько после собственной речи ещё не слушать микрофон: звук досыпается из
@@ -3119,7 +3135,9 @@ class Jarvis:
     async def _send_realtime(self):
         while True:
             msg = await self.out_queue.get()
-            await self.session.send_realtime_input(media=msg)
+            # Модель 3.1 отвергает устаревший media= (1007 «media_chunks is
+            # deprecated») — и Джарвис уходил на запасную 2.5 при каждом запуске.
+            await self.session.send_realtime_input(audio=_audio_blob(msg))
 
     # ── Захват микрофона ──────────────────────────────────────────────────────
 
@@ -4754,6 +4772,16 @@ def _root_error_text(exc: BaseException) -> str:
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         exc = exc.exceptions[0]
     return f"{type(exc).__name__}: {exc}"
+
+
+def _audio_blob(msg) -> types.Blob:
+    """Кадр микрофона {"data": bytes, "mime_type": ...} → Blob для audio=."""
+    if isinstance(msg, types.Blob):
+        return msg
+    mime = msg.get("mime_type") or "audio/pcm"
+    if mime == "audio/pcm":
+        mime = f"audio/pcm;rate={SEND_SAMPLE_RATE}"          # 3.1 требует частоту в типе
+    return types.Blob(data=msg["data"], mime_type=mime)
 
 
 def _model_allows_search(model: str) -> bool:
