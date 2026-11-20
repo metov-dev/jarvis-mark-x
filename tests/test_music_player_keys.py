@@ -83,6 +83,7 @@ def test_no_exact_track_opens_spotify_search_honestly(spotify, monkeypatch):
     monkeypatch.setattr(mp, "_spotify_search_track_uri", lambda q: None)
     from core import web_find
     monkeypatch.setattr(web_find, "spotify_uri", lambda q, kind=None: None)
+    monkeypatch.setattr(mp, "_find_youtube_direct_url", lambda q: None)     # и на YouTube не нашлось
     opened = []
     monkeypatch.setattr(mp, "_open_spotify_uri", lambda uri: opened.append(uri) or True)
     answer = mp._play(query="редкая песня")
@@ -164,5 +165,6 @@ def test_music_pauses_the_film(spotify, monkeypatch):
     monkeypatch.setattr(video_player, "video_playing", lambda: True)
     monkeypatch.setattr(video_player, "control", lambda action, value=None: sent.append(action) or "Пауза.")
     spotify()
+    monkeypatch.setattr(mp, "_spotify_search_track_uri", lambda q: "spotify:track:abc")   # без сети
     mp.music_player({"action": "play", "query": "Believer"})
     assert sent == ["pause"]

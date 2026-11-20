@@ -31,3 +31,14 @@ def test_spotify_один_поиск_трек_первым(monkeypatch):
     monkeypatch.setattr(web_find, "search", fake)
     assert web_find.spotify_uri("x", "track") == "spotify:track:BBBBBBBBBBBBBBBBBBBBBB"
     assert calls == [web_find.SPOTIFY_BACKEND]
+
+
+def test_трек_без_spotify_api_играет_на_youtube(monkeypatch):
+    opened = []
+    monkeypatch.setattr(mp, "_is_spotify_installed", lambda: True)
+    monkeypatch.setattr(mp, "_spotify_search_track_uri", lambda q: None)
+    monkeypatch.setattr(mp, "_find_youtube_direct_url", lambda q: "https://www.youtube.com/watch?v=MXUOec-mRSk&autoplay=1")
+    monkeypatch.setattr(mp, "_spotify_now", lambda: None)
+    monkeypatch.setattr(mp, "browser_control", lambda p, player=None: opened.append(p["url"]) or "ok")
+    assert mp._play("Mekhman Растопи") == "Включил «Mekhman Растопи» на YouTube."
+    assert opened == ["https://www.youtube.com/watch?v=MXUOec-mRSk&autoplay=1"]

@@ -559,7 +559,7 @@ def _say_track(np) -> str:
 def _play(query: str = "", playlist_url: str = "", player=None) -> str:
     """Включить трек / плейлист / продолжить. Отвечает тем, что реально
     заиграло: раньше было «Включаю…», даже когда ничего не началось."""
-    from core import media_session, web_find
+    from core import media_session
 
     if player:
         player.write_log(f"SYS: 🎵 {'«' + query + '»' if query else 'музыка'}")
@@ -590,7 +590,18 @@ def _play(query: str = "", playlist_url: str = "", player=None) -> str:
 
     # ── Конкретный трек / исполнитель / настроение ───────────────────────
     if installed:
-        uri = _spotify_search_track_uri(query) or web_find.spotify_uri(query, "track")
+        uri = _spotify_search_track_uri(query)
+        if not uri:
+            # Поиск Spotify закрыт (403 без Premium), а поиск ссылок через
+            # поисковики — 5–17 с и через раз пусто. YouTube находит за ~1 с.
+            # Вернётся Premium — снова сработает ветка Spotify выше, сама.
+            yt = _find_youtube_direct_url(query)
+            if yt:
+                np = _spotify_now()
+                if np and np.playing:
+                    media_session.command("pause", "spotify")    # не играть поверх
+                browser_control({"action": "go_to", "url": yt}, player=player)
+                return f"Включил «{query}» на YouTube."
         if uri:
             before = _spotify_now()
             _open_spotify_uri(uri)
