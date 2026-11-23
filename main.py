@@ -507,6 +507,10 @@ def wake_command_allows(name_in_transcript: bool, wake_window_open: bool, tool: 
     """Вызов допустим, если имя есть в расшифровке, или команда пришла в окне после «Джарвис» (только из списка)."""
     return name_in_transcript or (wake_window_open and tool in _WINDOW_ALLOWED_TOOLS)
 
+_MISHEARD_WAKE_PREFIX = re.compile(r"^\s*чарыс(?=[\s,.!?])[,\s.!?]+", re.IGNORECASE)
+# Старую настройку 0 сохраняем как отключение сигнала пробуждения.
+_WAKE_CUE = float(os.getenv("JARVIS_WAKE_ACK_SEC", "0.7")) > 0
+
 
 def _device_is_silent(index: int, seconds: float = 0.05, need_signal: bool = True) -> bool:
     """Проверяет, является ли устройство мёртвым или фантомным виртуальным входом.
