@@ -153,6 +153,9 @@ def test_command_in_wake_window_is_addressed_even_if_name_garbled():
     но 23:33 Gemini сам вызвал brightness_set — системные инструменты окно не открывает."""
     import main
     assert main.wake_command_allows(False, True, "web_search")
+    assert main.wake_command_allows(False, True, "video_control")
+    for risky in ("computer_control", "files", "open_app", "phone_call", "message", "window_control"):
+        assert not main.wake_command_allows(False, True, risky), risky
     assert main.wake_command_allows(True, False, "computer_control")
     assert not main.wake_command_allows(False, False, "web_search")
     assert not main.wake_command_allows(False, True, "computer_control")

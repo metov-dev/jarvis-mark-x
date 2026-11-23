@@ -36,3 +36,16 @@ def test_real_vosk_model_loads_from_cyrillic_project_path():
     vosk.SetLogLevel(-1)
     from core.wake_vosk import _vosk_model
     assert _vosk_model(model_dir.resolve()) is not None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junction только на Windows")
+def test_foreign_link_in_shared_dir_is_not_trusted(tmp_path):
+    """Чужая папка с тем же именем в общем каталоге не должна подменять модель."""
+    model = tmp_path / "Проекты" / "vosk-small-ru"
+    (model / "am").mkdir(parents=True)
+    (model / "am" / "final.mdl").write_bytes(b"ours")
+    fake = tmp_path / "links" / "vosk-small-ru"
+    (fake / "am").mkdir(parents=True)
+    (fake / "am" / "final.mdl").write_bytes(b"evil")
+    result = ascii_model_dir(model, base=tmp_path / "links")
+    assert result == model or (result / "am" / "final.mdl").read_bytes() == b"ours"

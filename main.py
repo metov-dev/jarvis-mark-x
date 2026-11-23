@@ -494,18 +494,18 @@ _WAKE_TRANSCRIPT_SEC = 10.0
 _WAKE_COMMAND_SEC = 12.0
 
 
-# Эти инструменты меняют систему: без имени в расшифровке их не разрешает даже окно после «Джарвис»
-# (23.11 23:33: Gemini сам вызвал brightness_set при пустой расшифровке).
-_WINDOW_DENIED_TOOLS = frozenset({"computer_control", "computer_settings", "file_controller"})
+# Окно после «Джарвис» (имя в расшифровке исказилось) разрешает только безопасные инструменты:
+# вопросы, время, видео и музыка. Всё остальное — файлы, настройки, звонки, приложения — требует
+# имени в расшифровке (23.11 23:33: Gemini сам вызвал brightness_set при пустой расшифровке).
+_WINDOW_ALLOWED_TOOLS = frozenset({
+    "web_search", "weather", "location", "clock", "about_me", "football", "translation",
+    "video_control", "movie_player", "music_player", "youtube_player", "recall_memory",
+})
 
 
 def wake_command_allows(name_in_transcript: bool, wake_window_open: bool, tool: str = "") -> bool:
-    """Вызов допустим, если имя есть в расшифровке, или команда пришла в окне после «Джарвис» (кроме системных)."""
-    return name_in_transcript or (wake_window_open and tool not in _WINDOW_DENIED_TOOLS)
-
-_MISHEARD_WAKE_PREFIX = re.compile(r"^\s*чарыс(?=[\s,.!?])[,\s.!?]+", re.IGNORECASE)
-# Старую настройку 0 сохраняем как отключение сигнала пробуждения.
-_WAKE_CUE = float(os.getenv("JARVIS_WAKE_ACK_SEC", "0.7")) > 0
+    """Вызов допустим, если имя есть в расшифровке, или команда пришла в окне после «Джарвис» (только из списка)."""
+    return name_in_transcript or (wake_window_open and tool in _WINDOW_ALLOWED_TOOLS)
 
 
 def _device_is_silent(index: int, seconds: float = 0.05, need_signal: bool = True) -> bool:
