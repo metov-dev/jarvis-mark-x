@@ -70,8 +70,13 @@ def _transfer_blocked(path: str, dest: str) -> bool:
     if _is_sensitive(src) or _is_sensitive(target) or _is_sensitive(final):
         return True
     if src.is_dir():
+        # Ссылки и junction внутри папки не пускаем: copytree идёт по ним, а проверка — нет.
         try:
-            return any(_is_sensitive(item) for item in src.rglob("*"))
+            for root, dirs, files in os.walk(src, followlinks=False):
+                for name in (*dirs, *files):
+                    item = Path(root) / name
+                    if item.is_symlink() or os.path.isjunction(item) or _is_sensitive(item):
+                        return True
         except OSError:
             return True
     return False

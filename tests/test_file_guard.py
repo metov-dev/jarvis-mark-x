@@ -24,3 +24,18 @@ def test_destination_directory_final_path_is_checked(tmp_path):
     out = tmp_path / ".ssh"
     out.mkdir()
     assert _transfer_blocked(str(src), str(out))
+
+
+def test_directory_with_junction_inside_is_blocked(tmp_path):
+    """copytree идёт по ссылкам, поэтому папка со ссылкой внутри не копируется."""
+    import subprocess, sys
+    if sys.platform != "win32":
+        import pytest
+        pytest.skip("junction только на Windows")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / ".env").write_text("TOKEN=1")
+    src = tmp_path / "docs"
+    src.mkdir()
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(src / "link"), str(outside)], capture_output=True, check=True)
+    assert _transfer_blocked(str(src), str(tmp_path / "copy"))
