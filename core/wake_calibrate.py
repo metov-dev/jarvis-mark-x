@@ -49,7 +49,8 @@ def run_calibration(name_pcms: list[bytes], negative_pcms: list[bytes], model=No
         model_dir = wake_vosk.find_model_dir()
         if not model_dir:
             raise FileNotFoundError(f"нет модели models/{wake_vosk.MODEL_DIRNAME}")
-        model = vosk.Model(str(model_dir))
+        from core.ascii_path import ascii_model_dir
+        model = vosk.Model(str(ascii_model_dir(model_dir)))
     report = wake_vosk.calibrate(model, name_pcms, negative_pcms)
     report["saved"] = good_enough(report)
     if report["saved"]:

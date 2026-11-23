@@ -173,10 +173,11 @@ class VoskEmbedder:
         if self._model is None:
             import vosk
             vosk.SetLogLevel(-1)
+            from core.ascii_path import ascii_model_dir
             asr, spk = self._find()
             if not asr or not spk:
                 raise FileNotFoundError("нет модели Vosk (речь или отпечатки голоса)")
-            self._model, self._spk = vosk.Model(str(asr)), vosk.SpkModel(str(spk))
+            self._model, self._spk = vosk.Model(str(ascii_model_dir(asr))), vosk.SpkModel(str(ascii_model_dir(spk)))
 
     def __call__(self, pcm: bytes) -> list[float] | None:
         with self._lock:

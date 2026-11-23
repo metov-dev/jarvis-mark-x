@@ -105,3 +105,8 @@ welcome_state.json
 calls.json
 football.json
 crests/
+
+# Общая память с ботом: личные факты, расписание, переписка — только на ПК
+memory/shared.json
+memory/sync_outbox.json
+memory/voice_cache/

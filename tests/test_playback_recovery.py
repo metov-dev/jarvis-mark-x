@@ -134,7 +134,9 @@ async def test_волна_на_hud_следует_за_настоящим_зву
 async def test_звук_доходит_до_устройства():
     stub = _Stub([_Stream()])
     await _run_playback(stub, [b"\x01\x02", b"\x03\x04"])
-    assert stub.opened[0].written == [b"\x01\x02", b"\x03\x04"]
+    # Голос усиливается (_VOICE_GAIN, коммит «голос громче») — ждём усиленные кадры.
+    boost = jarvis_main._boost_voice
+    assert stub.opened[0].written == [boost(b"\x01\x02"), boost(b"\x03\x04")]
 
 
 @pytest.mark.asyncio

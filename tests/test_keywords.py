@@ -55,7 +55,7 @@ class _Msg:
         self.texts.append(text)
 
 
-def _load_reply_helper():
+def _load_reply_helper(connected: bool = False):
     """Достаёт _reply_pc_result из bot.py без импорта тяжёлых зависимостей.
 
     Через разбор синтаксиса, а не поиск по соседним именам: первая версия
@@ -66,7 +66,9 @@ def _load_reply_helper():
     src = open("telegram_bot/bot.py", encoding="utf-8").read()
     tree = ast.parse(src)
     mod = types.ModuleType("_helper")
-    mod.__dict__.update({"base64": base64, "logger": types.SimpleNamespace(warning=lambda *a: None)})
+    mod.__dict__.update({"base64": base64, "logger": types.SimpleNamespace(warning=lambda *a: None),
+                         "bridge": types.SimpleNamespace(connected=connected),
+                         "_PC_OFFLINE": "❌ Компьютер не в сети."})
     # Забираем функцию вместе с её помощниками: одну штуку тащить нельзя —
     # _reply_pc_result зовёт _prefixed, и без него получаем NameError.
     wanted = {"_reply_pc_result", "_prefixed"}
@@ -99,10 +101,12 @@ def test_plain_answer_stays_text():
 
 
 def test_no_answer_from_pc_is_reported():
-    reply = _load_reply_helper()
-    msg = _Msg()
-    asyncio.run(reply(msg, None))
-    assert msg.texts and "не ответил" in msg.texts[0]
+    # ПК на связи, но подтверждения нет; и отдельно — ПК не в сети.
+    online, offline = _Msg(), _Msg()
+    asyncio.run(_load_reply_helper(True)(online, None))
+    asyncio.run(_load_reply_helper(False)(offline, None))
+    assert online.texts and "подтверждение команды не пришло" in online.texts[0]
+    assert offline.texts and "не в сети" in offline.texts[0]
 
 
 # ── просьба ответить голосом ─────────────────────────────────────────────────

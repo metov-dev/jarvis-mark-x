@@ -234,6 +234,14 @@ def sync_all(post=None) -> str:
     return res
 
 
+_last_bad_status = None
+
+
+def retry_delay(failures: int) -> float:
+    """Пауза до следующего обмена: после сбоев — вдвое дольше, но не больше 15 минут."""
+    return SYNC_SEC if failures <= 0 else min(SYNC_SEC * 2 ** min(failures, 6), 900.0)
+
+
 def sync(post=None) -> str:
     """Один обмен с сервером. post(url, json, headers) → (status, dict) — для тестов."""
     url, token = _config()
@@ -275,9 +283,13 @@ def sync(post=None) -> str:
     except Exception as exc:
         logger.debug("Общая память: сервер недоступен: %s", exc)
         return f"нет связи: {exc}"
+    global _last_bad_status
     if status != 200 or not isinstance(data, dict):
-        logger.warning("Общая память: сервер ответил %s", status)
+        if status != _last_bad_status:          # одна и та же ошибка сервера — одна запись, а не 693
+            logger.warning("Общая память: сервер ответил %s", status)
+            _last_bad_status = status
         return f"ответ {status}"
+    _last_bad_status = None
     if snaps:
         from core import pc_snapshot
         pc_snapshot.mark_sent(snaps)
@@ -316,13 +328,16 @@ def start():
         return
 
     def loop():
+        failures = 0
         while True:
             try:
                 res = sync_all()
                 logger.debug("Общая память: %s", res)
+                failures = 0 if res.startswith("ок") or res == "не настроено" else failures + 1
             except Exception as exc:
                 logger.warning("Общая память: %s", exc)
-            time.sleep(SYNC_SEC)
+                failures += 1
+            time.sleep(retry_delay(failures))
     threading.Thread(target=loop, daemon=True, name="memory-sync").start()
 
 

@@ -23,7 +23,11 @@
 """
 
 import asyncio
+import collections
+import socket
+from contextlib import asynccontextmanager
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -152,11 +156,16 @@ def стенд(tmp_path, monkeypatch):
     async def _no_meter(self):
         return None
     monkeypatch.setattr(jarvis_main.Jarvis, "_start_speaker_meter", _no_meter)
+    monkeypatch.setattr(jarvis_main.Jarvis, "_start_offline_wake", _no_meter)
+    monkeypatch.setattr(jarvis_main.Jarvis, "_offline_beep", staticmethod(lambda success: None))
     monkeypatch.setattr(jarvis_main, "_pick_input_device", lambda: None)
     # Тракт озвучки закрепляем явно: по умолчанию говорит Fish, и тогда звук
     # Gemini намеренно выбрасывается. Тесты ниже проверяют именно путь Gemini,
     # поэтому провайдер тут не «как настроено у владельца», а заданный.
     monkeypatch.setattr(jarvis_main, "_VOICE_PROVIDER", "gemini")
+    monkeypatch.setattr(jarvis_main, "_boost_voice", lambda pcm: pcm)
+    from actions import spotify_premium
+    monkeypatch.setattr(spotify_premium, "warm_up", lambda: None)
     # Проверки ниже — про сам конвейер звука, а не про обращение по имени:
     # отвечаем на всё. Фильтр по имени проверяется отдельно, в конце файла.
     monkeypatch.setattr(jarvis_main, "_WAKE_MODE", "always_on")
@@ -208,8 +217,16 @@ async def _прогнать(стенд, frames, script, timeout=5.0, min_bytes=0
 
             raise asyncio.CancelledError    # снимаем всю группу разом
 
-    with pytest.raises((asyncio.CancelledError, BaseExceptionGroup)):
+    try:
         await круг()
+    except asyncio.CancelledError:
+        pass
+    except BaseExceptionGroup as group:
+        # Настоящие ошибки задач круга не прячем: раньше любое исключение
+        # засчитывалось как «группу сняли», и баги main.py были не видны.
+        real = [e for e in group.exceptions if not isinstance(e, asyncio.CancelledError)]
+        if real:
+            raise real[0]
 
     return session
 
@@ -242,6 +259,77 @@ async def test_тишина_в_облако_не_уходит(стенд):
     session = await _прогнать(стенд, [_quiet()] * 30, script, timeout=1.0)
 
     assert session.sent == [], "тихие кадры не должны попадать в облако"
+
+
+def test_quiet_speech_onset_is_sent_before_loud_frame(стенд):
+    monkeypatch = стенд.monkeypatch
+    # Настоящий Jarvis из стенда: ручной набор полей отставал от main.py.
+    j = стенд.jarvis
+    j._speaker_meter = j._local_wake = j._clap = None
+    j._is_speaking = False
+    j._echo_guard_until = j._wake_capture_until = 0
+    j._wake_ring = collections.deque()
+    j._input_device = None
+    j._awake_until = time.monotonic() + 1000   # микрофон уже «разбужен»: проверяем только тихое начало речи
+    j._voice_ring = []
+    j._push_level = lambda _: None
+    j._latency = SimpleNamespace(mark_voice_frame=lambda: None)
+    j.out_queue = asyncio.Queue()
+    j._start_clap = lambda _: None
+    async def no_setup():
+        pass
+
+    j._start_local_wake = j._start_speaker_meter = j._start_offline_wake = no_setup
+    j.session = object()
+    j._offline_wake = None
+    monkeypatch.setattr(jarvis_main, "MIC_RMS_THRESHOLD", 150)
+    loop = SimpleNamespace(call_soon_threadsafe=lambda callback, *args: callback(*args))
+    monkeypatch.setattr(asyncio, "get_event_loop", lambda: loop)
+
+    async def stop(_):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(asyncio, "sleep", stop)
+    old, quiet, loud = _loud(40), _loud(100), _loud(4000)
+    frames = [old] * 20 + [quiet] * 4 + [loud]
+    monkeypatch.setattr(jarvis_main.sd, "InputStream", lambda **kw: _MicStream(frames, **kw))
+    with pytest.raises(asyncio.CancelledError):
+        j._listen_audio().send(None)
+
+    audio = [j.out_queue.get_nowait()["data"] for _ in range(j.out_queue.qsize())]
+    assert audio == [quiet.tobytes()] * 4 + [loud.tobytes()]
+
+
+def test_wake_word_interruption_sends_audio_without_waiting_for_ack(monkeypatch):
+    j = jarvis_main.Jarvis.__new__(jarvis_main.Jarvis)
+    j.ui = _UI()
+    j._is_speaking = True
+    j._wake_ring = collections.deque([b"wake-and-command"])
+    j._mic_hears_speakers = False
+    j._echo_guard_until = 0.0
+    j.wake = lambda: None
+    j._awake_until = j._wake_command_until = j._wake_capture_until = j._wake_transcript_until = 0.0
+    j._wake_name_hint = ""
+    j._open_through = lambda _: None
+    stopped = []
+    j._drop_pending_speech = lambda: stopped.append(True)
+    def set_speaking(value):
+        j._is_speaking = value
+        j._echo_guard_until = time.monotonic() + 0.5
+
+    j.set_speaking = set_speaking
+    scheduled = []
+    loop = SimpleNamespace(call_later=lambda *args: scheduled.append(args))
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    monkeypatch.setattr(jarvis_main, "_WAKE_CUE", False)
+    sent = []
+
+    j._on_local_wake(sent.append)
+
+    assert stopped == [True]
+    assert not scheduled
+    assert j._echo_guard_until <= time.monotonic()
+    assert [item["data"] for item in sent] == [b"wake-and-command"]
 
 
 @pytest.mark.asyncio
@@ -568,9 +656,9 @@ async def test_обращение_по_имени_будит(по_имени):
 async def test_имя_после_первых_байт_ответа_не_теряет_звук(по_имени):
     """Расшифровка может отстать от ответа: звук копится и доигрывает."""
     script = [
-        _resp(heard="слушай"),
+        _resp(heard="Жарвис"),
         _resp(data=b"\x09\x09" * 50),
-        _resp(heard=" Жарвис"),
+        _resp(heard=" включи музыку"),
         _resp(data=b"\x0a\x0a" * 50),
         _resp(said="Слушаю, сэр.", turn_complete=True),
     ]
@@ -582,6 +670,8 @@ async def test_имя_после_первых_байт_ответа_не_тер�
 @pytest.mark.asyncio
 async def test_в_разговоре_имя_повторять_не_нужно(по_имени):
     по_имени.jarvis.wake()
+    # Как после «Джарвис, …»: имя уже звучало, окно разговора открыто (_voice_context_until).
+    по_имени.jarvis._voice_context_until = time.monotonic() + 30
     script = [
         _resp(heard="а какая погода"),
         _resp(data=b"\x05\x06" * 100),
@@ -666,6 +756,7 @@ async def test_команда_выполняется_если_имя_пришл�
     monkeypatch.setattr(jarvis_main.Jarvis, "_execute_tool", поддельный_инструмент)
 
     j = по_имени.jarvis
+    j._wake_command_until = time.monotonic() + 10   # окно после услышанного «Джарвис»
     session = _ToolSession([
         _resp(heard="открой хром"),
         _tool_resp("open_app", {"app_name": "chrome"}),
@@ -759,6 +850,8 @@ async def test_модель_vosk_не_глушит_джарвиса(по_име�
 @pytest.mark.asyncio
 async def test_имя_потерянное_в_расшифровке_всё_равно_будит(по_имени):
     """Журнал владельца: «Джарвис, привет» пришло как «, привет.» — молчал."""
+    # Локальный детектор услышал имя только что: окно разбора расшифровки открыто.
+    по_имени.jarvis._wake_transcript_until = time.monotonic() + 10
     script = [
         _resp(heard=", привет."),
         _resp(data=b"\x01\x02" * 100),
@@ -929,6 +1022,8 @@ async def test_в_окне_поправки_речь_доходит_поверх
     j._speaker_meter = _LoudSpeakers()
     j._mic_hears_speakers = True
     j._through_until = time.monotonic() + 8           # только что включили музыку
+    for _ in range(30):
+        j._echo.observe(400, j._speaker_meter.peak)
     session = await _прогнать(стенд, [_loud()] * 5, _SPOKEN, timeout=2.0)
     assert _audio_sent(session), "поправка не дошла до Gemini"
 
@@ -946,24 +1041,24 @@ async def test_в_окне_поправки_тихая_музыка_не_ухо�
 
 
 @pytest.mark.asyncio
-async def test_под_музыкой_имя_слышно_и_в_окне_разговора(стенд):
+async def test_speaker_echo_cannot_enter_wake_detector_in_conversation(стенд):
     j = стенд.jarvis
     j._speaker_meter = _LoudSpeakers()
     j._mic_hears_speakers = True
     j._local_wake = ears = _Ears()
     session = await _прогнать(стенд, [_loud()] * 5, _SPOKEN, timeout=2.0)
-    assert not _audio_sent(session) and ears.fed == 5       # в облако нет, «Джарвис» — слушаем
+    assert not _audio_sent(session) and ears.fed == 0
 
 
 @pytest.mark.asyncio
-async def test_пока_говорит_на_колонках_имя_слышно(стенд):
+async def test_jarvis_cannot_wake_itself_while_speaking_on_speakers(стенд):
     j = стенд.jarvis
     j._mic_hears_speakers = True
     j._local_wake = ears = _Ears()
     j._is_speaking = True
     j._play_audio = _idle_play
     session = await _прогнать(стенд, [_loud()] * 4, _SPOKEN, timeout=1.0)
-    assert not _audio_sent(session) and ears.fed == 4
+    assert not _audio_sent(session) and ears.fed == 0
 
 
 @pytest.mark.asyncio
@@ -978,6 +1073,7 @@ async def test_в_наушниках_можно_перебить_обычной_
 
 def test_имя_во_время_ответа_обрывает_его(стенд):
     j = стенд.jarvis
+    j._mic_hears_speakers = False
     j.audio_in_queue = asyncio.Queue()
     for _ in range(3):
         j.audio_in_queue.put_nowait(b"\x01\x02")
@@ -985,7 +1081,9 @@ def test_имя_во_время_ответа_обрывает_его(стенд)
     sent = []
     j._on_local_wake(sent.append)
     assert j.audio_in_queue.empty() and not j._is_speaking      # замолчал, хвост выброшен
-    assert j.is_awake() and j._through_until > time.monotonic()  # слушает, звук приглушён
+    # Слушает фразу: окно команды открыто. Приглушение и сигнал — только после
+    # разбора фразы (decide() → _open_through), см. комментарий в _on_local_wake.
+    assert j.is_awake() and j._wake_command_until > time.monotonic()
 
 
 @pytest.mark.asyncio
@@ -1210,40 +1308,29 @@ def test_простой_сессии_1008_не_считается_блокиро
     assert not jarvis_main._key_blocked("gaierror: [Errno 11001] getaddrinfo failed")
 
 
-@pytest.mark.asyncio
-async def test_голое_имя_сразу_готовая_фраза_без_gemini(стенд, monkeypatch):
+def test_name_acknowledgement_is_immediate_and_keeps_microphone_open(стенд, monkeypatch):
     j = стенд.jarvis
-    monkeypatch.setattr(jarvis_main, "_WAKE_ACK_SEC", 0.05)
-    said = []
-
-    async def fake_speak(text):
-        said.append(text)
-    monkeypatch.setattr(j, "_speak_fish", fake_speak)
+    monkeypatch.setattr(jarvis_main, "_WAKE_CUE", True)
+    cues, sent = [], []
+    monkeypatch.setattr(j, "_offline_beep", cues.append)
     j._wake_ring.extend([b"name1", b"name2"])
+
+    j._on_local_wake(sent.append)
+
+    # Сигнал — после разбора фразы (decide → _notify_wake), чтобы не звенеть на ложное слово.
+    assert cues == []
+    assert j.is_awake() and not j._is_speaking
+    assert [frame["data"] for frame in sent] == [b"name1", b"name2"]
+
+
+def test_command_already_in_wake_buffer_is_forwarded_in_full(по_имени, monkeypatch):
+    j = по_имени.jarvis
+    monkeypatch.setattr(jarvis_main, "_WAKE_CUE", False)
+    j._wake_ring.extend([b"name1", b"name2", b"command", b"tail"])
     sent = []
     j._on_local_wake(sent.append)
-    await asyncio.sleep(0.15)
-    assert said and said[0] in jarvis_main.quick.PHRASES["here"]
-    assert sent == []                                   # имя в Gemini не ушло — второго ответа не будет
-
-
-@pytest.mark.asyncio
-async def test_имя_и_команда_уходят_в_gemini_с_имени(стенд, monkeypatch):
-    j = стенд.jarvis
-    monkeypatch.setattr(jarvis_main, "_WAKE_ACK_SEC", 0.05)
-    said = []
-
-    async def fake_speak(text):
-        said.append(text)
-    monkeypatch.setattr(j, "_speak_fish", fake_speak)
-    j._wake_ring.extend([b"name1", b"name2"])
-    sent = []
-    j._on_local_wake(sent.append)
-    j._wake_hold.append(b"cmd")                         # «…открой ютуб» — громко
-    j._wake_hold_loud = jarvis_main._WAKE_ACK_SPEECH_FRAMES
-    await asyncio.sleep(0.15)
-    assert not said
-    assert [x["data"] for x in sent] == [b"name1", b"name2", b"cmd"]
+    assert [frame["data"] for frame in sent] == [b"name1", b"name2", b"command", b"tail"]
+    assert not j._wake_ring
 
 
 def test_лестница_моделей_3_1_первой_и_без_поиска():
@@ -1273,3 +1360,323 @@ def test_шумодав_asus_глух_к_колонкам_только_если_
 def test_кадр_микрофона_уходит_как_audio_с_частотой():
     blob = jarvis_main._audio_blob({"data": b"\x01\x02", "mime_type": "audio/pcm"})
     assert blob.data == b"\x01\x02" and blob.mime_type == f"audio/pcm;rate={jarvis_main.SEND_SAMPLE_RATE}"
+
+
+@pytest.mark.asyncio
+async def test_dns_outage_preserves_live_features_and_backs_off(monkeypatch):
+    jarvis = jarvis_main.Jarvis.__new__(jarvis_main.Jarvis)
+    jarvis.ui = _UI()
+    jarvis._resume_handle = None
+    jarvis.set_speaking = lambda _: None
+    attempts = []
+    delays = []
+
+    @asynccontextmanager
+    async def connect(*, model, config):
+        attempts.append(config)
+        raise socket.gaierror(11001, "getaddrinfo failed")
+        yield
+
+    async def sleep(delay):
+        delays.append(delay)
+        if len(delays) == 4:
+            raise asyncio.CancelledError
+
+    client = SimpleNamespace(aio=SimpleNamespace(live=SimpleNamespace(connect=connect)))
+    monkeypatch.setenv("JARVIS_ASR_HINTS", "1")
+    monkeypatch.setenv("JARVIS_GOOGLE_SEARCH", "1")
+    monkeypatch.setattr(jarvis_main.genai, "Client", lambda **kwargs: client)
+    monkeypatch.setattr(jarvis_main, "_get_api_key", lambda: "test-key")
+    monkeypatch.setattr(jarvis_main.asyncio, "sleep", sleep)
+    monkeypatch.setattr(jarvis, "_build_config", lambda: (jarvis._asr_hints, jarvis._grounding))
+
+    async def microphone():
+        await asyncio.Future()
+
+    monkeypatch.setattr(jarvis, "_listen_audio", microphone)
+
+    with pytest.raises(asyncio.CancelledError):
+        await jarvis.run()
+
+    assert attempts == [(True, True)] * 4
+    assert delays == [2, 4, 8, 16]
+
+
+@pytest.mark.asyncio
+async def test_failed_planned_reconnect_reports_connection_loss(monkeypatch):
+    jarvis = jarvis_main.Jarvis.__new__(jarvis_main.Jarvis)
+    jarvis.ui = _UI()
+    jarvis._resume_handle = None
+    jarvis.set_speaking = lambda _: None
+    attempts = 0
+    states_after_attempt = []
+
+    @asynccontextmanager
+    async def connect(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            yield object()
+        else:
+            raise socket.gaierror(11001, "getaddrinfo failed")
+
+    async def go_away():
+        jarvis._go_away_at = time.monotonic()
+        raise jarvis_main._PlannedReconnect()
+
+    async def idle():
+        return None
+
+    async def sleep(delay):
+        states_after_attempt.append(jarvis.ui.states[-1])
+        if len(states_after_attempt) == 2:
+            raise asyncio.CancelledError
+
+    from core import wakeword
+
+    client = SimpleNamespace(aio=SimpleNamespace(live=SimpleNamespace(connect=connect)))
+    monkeypatch.setattr(jarvis_main.genai, "Client", lambda **kwargs: client)
+    monkeypatch.setattr(jarvis_main, "_get_api_key", lambda: "test-key")
+    monkeypatch.setattr(jarvis_main.asyncio, "sleep", sleep)
+    monkeypatch.setattr(wakeword, "play_activation_chime", lambda: None)
+    monkeypatch.setattr(jarvis, "_build_config", lambda: {})
+    monkeypatch.setattr(jarvis, "_receive_audio", go_away)
+    monkeypatch.setattr(jarvis, "_listen_audio", idle)
+    monkeypatch.setattr(jarvis, "_send_realtime", idle)
+    monkeypatch.setattr(jarvis, "_play_audio", idle)
+    jarvis._intro_checked = True
+
+    with pytest.raises(asyncio.CancelledError):
+        await jarvis.run()
+
+    assert states_after_attempt == ["IDLE", "RECONNECTING"]
+
+
+@pytest.mark.asyncio
+async def test_offline_phrases_require_address_and_never_call_cloud(стенд, monkeypatch):
+    j = стенд.jarvis
+    j.session = None
+    replies, done = [], []
+    monkeypatch.setattr(j, "_offline_feedback", lambda text, success, **kwargs: replies.append((text, success)))
+
+    async def local_voice(text):
+        return True
+
+    monkeypatch.setattr(j, "_speak_offline", local_voice)
+
+    async def tool(fc):
+        done.append(fc.name)
+        return SimpleNamespace(response={"result": "Таймер на 5 минут запущен."})
+
+    def cloud(*args, **kwargs):
+        pytest.fail("Offline commands must not contact the cloud or queue conversation memory")
+
+    monkeypatch.setattr(j, "_execute_tool", tool)
+    monkeypatch.setattr(j, "_speak_fish", cloud)
+    monkeypatch.setattr(j, "_remember_turn", cloud)
+
+    j._offline_phrase("поставь таймер на пять минут")
+    j._offline_phrase("Джарвис выключи компьютер")
+    j.ui.muted = True
+    j._offline_phrase("Джарвис поставь таймер на пять минут")
+    j.ui.muted = False
+    j.session = object()
+    j._offline_phrase("Джарвис поставь таймер на пять минут")
+    assert not done
+    assert replies and replies[-1][1] is False
+
+    j.session = None
+    j._offline_phrase("Джарвис")
+    j._offline_phrase("поставь таймер на пять минут")
+    j._offline_phrase("Джарвис поставь таймер на пять минут")
+    await asyncio.sleep(0)
+    assert done == ["clock"]
+    assert replies[-1] == ("Таймер на 5 минут запущен.", True)
+
+    j._offline_phrase("из поставь таймер на пять минут")
+    assert done == ["clock"]
+    j._arm_offline_keyword()
+    j._offline_phrase("не ставь таймер на пять минут")
+    assert done == ["clock"]
+    j._arm_offline_keyword()
+    j._offline_phrase("из поставь таймер на пять минут")
+    await asyncio.sleep(0)
+    assert done == ["clock", "clock"]
+
+
+@pytest.mark.asyncio
+async def test_microphone_keeps_running_during_connection_retries(стенд, monkeypatch):
+    j = стенд.jarvis
+    listening = asyncio.Event()
+    check_routes = asyncio.Event()
+    callback = None
+    feeds = []
+    closes = []
+    j.wake()
+    j._local_wake = False
+    monkeypatch.setattr(j, "_start_clap", lambda loop: None)
+
+    class Offline:
+        def feed(self, data):
+            feeds.append(data)
+        def reset(self):
+            pass
+        def stop(self):
+            pass
+
+    j._offline_wake = Offline()
+
+    class Mic(_MicStream):
+        def __enter__(self):
+            nonlocal callback
+            callback = self._callback
+            listening.set()
+            return super().__enter__()
+        def __exit__(self, *exc):
+            closes.append(True)
+
+    monkeypatch.setattr(jarvis_main.sd, "InputStream", lambda **kw: Mic([], **kw))
+
+    async def fake_live():
+        await listening.wait()
+        raw = _loud()
+        callback(raw, len(raw), None, None)
+        assert feeds == [raw.tobytes()]
+        j.session = object()
+        j.out_queue = asyncio.Queue()
+        callback(raw, len(raw), None, None)
+        await asyncio.sleep(0)
+        assert j.out_queue.get_nowait()["data"] == raw.tobytes()
+        old_queue = j.out_queue
+        callback(raw, len(raw), None, None)
+        j.session = None
+        callback(raw, len(raw), None, None)
+        assert feeds == [raw.tobytes()] * 2
+        j.out_queue = asyncio.Queue()
+        j.session = object()
+        await asyncio.sleep(0)
+        assert old_queue.empty() and j.out_queue.empty()
+        assert not closes
+        check_routes.set()
+
+    monkeypatch.setattr(j, "_run_live", fake_live)
+    await asyncio.wait_for(j.run(), timeout=2)
+    assert check_routes.is_set() and closes == [True]
+
+
+@pytest.mark.asyncio
+async def test_wake_sends_quiet_command_and_silence_below_input_threshold(по_имени, monkeypatch):
+    j = по_имени.jarvis
+    j._local_wake = False  # Wake confirmation is injected below.
+    monkeypatch.setattr(jarvis_main, "MIC_RMS_THRESHOLD", 188)
+    j._on_local_wake(lambda item: None)
+    j._quiet_frames = jarvis_main.MIC_HANGOVER_FRAMES + 50
+    command, tail = _loud(93), _quiet()
+    script = [_resp(heard="который час", data=b"\x01\x02" * 100, turn_complete=True)]
+
+    session = await _прогнать(по_имени, [command, tail], script)
+
+    assert [chunk.data for chunk in session.sent[:2]] == [command.tobytes(), tail.tobytes()]
+
+
+@pytest.mark.asyncio
+async def test_misheard_name_uses_quick_command_once_after_local_wake(по_имени, monkeypatch):
+    j = по_имени.jarvis
+    j._local_wake = False
+    monkeypatch.setattr(jarvis_main, "_quick_allowed", lambda: True)
+    commands = []
+
+    async def run_quick(q, text):
+        commands.append((q.tool, q.args["action"]))
+
+    monkeypatch.setattr(j, "_quick_run", run_quick)
+    assert j._match_voice_quick("чарыс который час") is None
+    j._on_local_wake(lambda _: None)
+    assert j._match_voice_quick("чарыс выключи компьютер") is None
+    assert j._match_voice_quick("чарыс который час и ещё погода") is None
+
+    script = [_resp(heard="чарыс который час", data=bytes(200)),
+              _resp(said="Другой ответ.", turn_complete=True)]
+    await _прогнать(по_имени, [_loud()], script, timeout=0.3)
+
+    assert commands == [("clock", "now")]
+    assert not по_имени.out.written
+    assert j._match_voice_quick("чарыс который час") is None
+
+
+@pytest.mark.asyncio
+async def test_music_is_removed_before_sleeping_wake_detector(по_имени):
+    j = по_имени.jarvis
+    j._mic_hears_speakers = True
+    j._speaker_meter = _Music(0.5)
+
+    class RecordingEars:
+        def __init__(self):
+            self.frames = []
+        def feed(self, pcm):
+            self.frames.append(pcm)
+
+    j._local_wake = ears = RecordingEars()
+    echo = _loud(400)
+    speech = _loud(4000)
+    session = await _прогнать(по_имени, [echo] * 40 + [speech], _SPOKEN, timeout=0.5)
+    assert not _audio_sent(session)
+    # Музыка вырезана, но два кадра прямо перед голосом возвращаются как есть
+    # (WakeLeadIn): иначе у имени съедается начало.
+    assert ears.frames[:-3] == [bytes(echo.nbytes)] * 38
+    assert ears.frames[-3:] == [echo.tobytes(), echo.tobytes(), speech.tobytes()]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("separate_name", [True, False])
+async def test_post_wake_accepts_one_non_quick_speech_turn(по_имени, monkeypatch, separate_name):
+    jarvis = по_имени.jarvis
+    heard_by_tool, cues = [], []
+
+    async def execute(fc):
+        heard_by_tool.append(fc.jarvis_utterance)
+        return jarvis_main.types.FunctionResponse(id=fc.id, name=fc.name, response={"ok": True})
+
+    monkeypatch.setattr(jarvis, "_execute_tool", execute)
+    monkeypatch.setattr(jarvis, "_notify_wake", lambda: cues.append("beep"))
+    monkeypatch.setattr(jarvis, "_match_voice_quick", lambda text: None)
+    monkeypatch.setattr(jarvis_main, "_quick_allowed", lambda: False)
+    monkeypatch.setattr(jarvis, "_learn_from_phrase", lambda text: None)
+    monkeypatch.setattr(jarvis, "_remember_turn", lambda *args: None)
+
+    first = []
+    if separate_name:
+        first = [
+            _resp(heard="Чарли"),
+            _resp(data=b"\x08\x09" * 20),
+            _resp(said="Приветствие модели.", turn_complete=True),
+        ]
+    else:
+        jarvis._on_local_wake(lambda data: None, "чарли")
+
+    request = "Открой рабочую вкладку с расписанием"
+    session = _ToolSession([
+        *first,
+        _resp(heard="он открывал это вчера", turn_complete=True),
+        _tool_resp("browser"),
+        _resp(heard=request, turn_complete=True),
+        _resp(heard="Открой другую вкладку"),
+        _tool_resp("browser"),
+    ])
+    jarvis.session = session
+    jarvis.out_queue = asyncio.Queue()
+    jarvis._turn_done_event = asyncio.Event()
+    task = asyncio.create_task(jarvis._receive_audio())
+    try:
+        await asyncio.sleep(jarvis_main._TOOL_WAKE_WAIT_SEC + 0.3)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert heard_by_tool == [request]
+    assert len(cues) == int(separate_name)
+    assert jarvis.out_queue.empty()
+    assert len(session.tool_responses) == 2
+    assert any("не Джарвису" in str(response.response) for response in session.tool_responses)
+

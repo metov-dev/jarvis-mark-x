@@ -145,3 +145,17 @@ async def test_endpoint_requires_token(monkeypatch, server):
     r = client.post("/api/memory/sync", json={"facts_add": ["имя: Сардор"]},
                     headers={"Authorization": "Bearer s3cret"})
     assert r.status_code == 200 and "имя: Сардор" in r.json()["facts"]
+
+
+def test_repeated_server_500_is_logged_once_and_backs_off(monkeypatch, caplog):
+    """В журнале 693 одинаковых «сервер ответил 500» — раз в минуту без пауз."""
+    from memory import shared
+    monkeypatch.setattr(shared, "_config", lambda: ("https://x", "t"))
+    monkeypatch.setattr(shared, "_bootstrap", lambda s: None)
+    monkeypatch.setattr(shared, "_last_bad_status", None)
+    caplog.set_level("WARNING")
+    for _ in range(5):
+        assert shared.sync(post=lambda *a: (500, None)) == "ответ 500"
+    assert sum("сервер ответил 500" in r.message for r in caplog.records) == 1
+    delays = [shared.retry_delay(n) for n in range(0, 9)]
+    assert delays[0] == shared.SYNC_SEC and delays[3] > delays[1] and max(delays) <= 900

@@ -25,6 +25,7 @@ import re
 import sys
 import threading
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
@@ -42,6 +43,67 @@ WAKE_RE = re.compile(
     r"|(?<![а-яё])(?:дж|д[аэ]|ча)[аеэя]?р[влф]ис"
     r"|(?<![a-z])(?:dj|j|ch)[ae]r?v[iey]",
     re.IGNORECASE)
+
+# Префикс обращения, а не поиск имени где угодно в предложении.
+_ADDRESS_PREFIX = re.compile(
+    r"^\s*(?:(?:эй|слушай)[,\s]+)?"
+    r"(?P<name>д[жз][аоеэя]р[вф][иеыі][сз]|ж[аоеэя]р[вф][иеыі][сз]|"
+    r"чарли|charlie|(?:dj|j)[aoe]rv[iy][sz])(?=$|[\s,;:.!?—-])",
+    re.IGNORECASE,
+)
+_DIRECT_REQUEST = re.compile(
+    r"^(?:(?:ты\s+)?можешь\s+|давай\s+)?(?:сколько|который|како[йея]|кто|где|когда|почему|зачем|как|что|"
+    r"прибавь|убавь|сделай|включи|выключи|отключи|останови|поставь|"
+    r"открой|закрой|найди|покажи|напомни|объясни|расскажи|скажи|подскажи|"
+    r"запусти|продолжи|отмени|пауза|громче|тише|стоп|хватит|привет|повтори|"
+    r"спасибо|помоги|перемотай|позвони|напиши|засеки|разбуди|переключи)(?:\b|$)",
+    re.IGNORECASE,
+)
+
+
+def split_address(text: str, *, allow_alias: bool = True) -> tuple[str, str]:
+    """Возвращает распознанное имя и остаток фразы. Упоминание в середине не подходит."""
+    text = text.strip()
+    match = _ADDRESS_PREFIX.match(text)
+    if match:
+        command = text[match.end():].lstrip(" ,;:.!?—-")
+    else:
+        command, separator, suffix = text.rpartition(",")
+        match = _ADDRESS_PREFIX.fullmatch(suffix.strip(" .!?")) if separator else None
+        if not match:
+            return "", text
+        command = command.strip()
+    name = match["name"].lower()
+    if name in ("чарли", "charlie") and not allow_alias:
+        return "", text
+    return name, command
+
+
+def repair_address(text: str, acoustic_name: str) -> str:
+    """Восстановить начало фразы по текущей акустической гипотезе имени."""
+    name = acoustic_name.casefold()
+    if name in ("джарвис", "джорвис", "джорвиз"):
+        text = re.sub(r"^\s*джарвист(?=[,\s.!?]|$)", "Джарвис", text, flags=re.IGNORECASE)
+    if name in ("джорвис", "джорвиз"):
+        text = re.sub(r"^\s*джойс(?=[,\s.!?]|$)", "Джорвис", text, flags=re.IGNORECASE)
+    return text
+
+
+def address_reason(text: str, *, followup: bool = False, final: bool = False,
+                   allow_alias: bool = True, quick_match: bool = False,
+                   confirmation: bool = False, after_wake: bool = False) -> str:
+    """Определяет адресата по полному обращению или продолжению с понятной целью."""
+    name, command = split_address(text, allow_alias=allow_alias)
+    if name:
+        if (not command and final) or _DIRECT_REQUEST.match(command) or quick_match or confirmation:
+            return "name"
+        return ""
+    if after_wake and (quick_match or _DIRECT_REQUEST.match(command)):
+        return "wake_command"
+    if followup and (quick_match or confirmation):
+        return "followup"
+    return ""
+
 
 MODEL_DIRNAME = "vosk-small-ru"
 SAMPLE_RATE = 16000
@@ -231,14 +293,25 @@ def find_model_dir() -> Path | None:
     return None
 
 
+@lru_cache(maxsize=1)
+def _vosk_model(model_dir: Path):
+    import vosk
+    vosk.SetLogLevel(-1)
+    from core.ascii_path import ascii_model_dir
+    return vosk.Model(str(ascii_model_dir(model_dir)))
+
+
 class LocalWake:
     """Офлайн-детектор имени. Кадры кормятся из аудио-колбэка (feed —
     мгновенно), распознавание идёт в своём потоке: колбэк обязан
     возвращаться за миллисекунды."""
 
     def __init__(self, on_wake: Callable[[str], None], model_dir: Path | None = None,
-                 recognizer_factory=None, aliases: list[str] | None = None):
+                 recognizer_factory=None, aliases: list[str] | None = None,
+                 on_phrase: Callable[[str], None] | None = None):
         self._on_wake = on_wake
+        self._on_phrase = on_phrase
+        self._generation = 0
         self._model_dir = model_dir
         self._factory = recognizer_factory      # для тестов: без vosk и модели
         # Выученные на голосе владельца варианты имени (см. calibrate).
@@ -263,7 +336,10 @@ class LocalWake:
                                         name="wake-vosk")
         self._thread.start()
         self.ready = True
-        logger.info("Слово «Джарвис» слушается локально (Vosk)")
+        if self._on_phrase:
+            logger.info("Распознавание команд без Gemini готово (Vosk)")
+        else:
+            logger.info("Слово «Джарвис» слушается локально (Vosk)")
         return True
 
     def stop(self):
@@ -277,8 +353,7 @@ class LocalWake:
         if not model_dir:
             raise FileNotFoundError(f"нет модели models/{MODEL_DIRNAME}")
         import vosk
-        vosk.SetLogLevel(-1)
-        model = vosk.Model(str(model_dir))
+        model = _vosk_model(model_dir.resolve())
         if self._aliases:
             logger.info("Слово «Джарвис»: вдобавок выученные варианты %s", self._aliases)
         # Свободное распознавание + имя по регулярке и выученным вариантам.
@@ -290,43 +365,57 @@ class LocalWake:
         if not self.ready:
             return
         try:
-            self._q.put_nowait(pcm)
+            self._q.put_nowait((self._generation, pcm))
         except queue.Full:
             pass                       # поток не успевает — лучше пропуск, чем затор
 
     def reset(self):
         """Сбросить накопленное: после пробуждения или своей речи."""
+        self._generation += 1
         while True:
             try:
                 self._q.get_nowait()
             except queue.Empty:
                 break
-        self._reset_pending = True
 
     # ── поток распознавания ──────────────────────────────────────────────────
     def _run(self, rec):
-        self._reset_pending = False
+        active_generation = 0
         while not self._stop.is_set():
             try:
-                pcm = self._q.get(timeout=0.5)
+                generation, pcm = self._q.get(timeout=0.5)
             except queue.Empty:
                 continue
-            if self._reset_pending:
-                self._reset_pending = False
+            if generation != self._generation:
+                continue
+            if generation != active_generation:
+                active_generation = generation
                 try:
                     rec.Reset()
                 except Exception:
                     pass
             try:
-                if rec.AcceptWaveform(pcm):
+                complete = rec.AcceptWaveform(pcm)
+                if complete:
                     text = json.loads(rec.Result()).get("text", "")
+                elif self._on_phrase:
+                    continue
                 else:
                     text = json.loads(rec.PartialResult()).get("partial", "")
             except Exception as exc:
                 logger.debug("Vosk: %s", exc)
                 continue
+            if generation != self._generation or self._stop.is_set():
+                continue
             if text:
                 self.last_heard = text
+            if self._on_phrase:
+                if text:
+                    try:
+                        self._on_phrase(text)
+                    except Exception as exc:
+                        logger.warning("Обработчик локальной команды: %s", exc)
+                continue
             named = text and (has_wake_word(text) or (self._aliases and matches_alias(text, self._aliases)))
             if named and time.monotonic() >= self._cooldown_until:
                 self._cooldown_until = time.monotonic() + _COOLDOWN_SEC

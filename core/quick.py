@@ -116,6 +116,9 @@ _NUM = r"(?P<v>(на |до )?[\w% ]{1,30})"
 # (шаблон всей фразы, инструмент, аргументы, ключ ответа).
 # Аргумент-строка вида "@v" берётся из группы шаблона и проверяется.
 _RULES: list[tuple[str, str | None, dict, str]] = [
+    ('(?:включи|поставь|запусти|открой|найди|посмотри) (?:фильм |сериал )?(?P<title>\\w[\\w :\\-]{0,149}?) (?:на |в )(?:kinogo|киног[оа])', 'movie_player', {'action': 'play', 'provider': 'kinogo', 'title': '@title'}, ''),
+    ('(?:поставь это на паузу|это на паузу|приостанови это|поставь на паузу то что играет)', 'video_control', {'action': 'pause', 'target': 'context'}, ''),
+    ('на чем я остановил(?:ся|ась)|на чем мы остановились|над чем я работал(?:а)?', 'desktop_context', {'action': 'resume'}, ''),
     # Пауза и продолжение: video_control сам уходит в Spotify, если видео нет.
     # Голое «стоп» — не здесь: им перебивают самого Джарвиса.
     (r"(поставь )?(на )?паузу|пауза|(стоп|останови) (" + _MUSIC + "|" + _VIDEO + ")|"
@@ -149,6 +152,9 @@ _RULES: list[tuple[str, str | None, dict, str]] = [
      {"action": "volume_set", "value": "@v"}, "ack"),
     (r"выключи звук|без звука|отключи звук", "computer_control", {"action": "mute"}, "mute"),
     (r"включи звук|верни звук", "computer_control", {"action": "unmute"}, "unmute"),
+    ('(сделай )?(экран (по)?ярче|(по)?ярче( экран)?)', 'computer_control', {'action': 'brightness_up'}, ''),
+    ('(сделай )?(экран (по)?темнее|(по)?темнее( экран)?)', 'computer_control', {'action': 'brightness_down'}, ''),
+    ('(поставь |сделай )?яркость (?P<v>(на |до )?[\\w% ]{1,30})', 'computer_control', {'action': 'brightness_set', 'value': '@v'}, ''),
     # Экран.
     (r"(разверни |сделай )?(" + _VIDEO + " )?(на )?(весь|полный) экран", "video_control",
      {"action": "fullscreen"}, "fullscreen"),
@@ -159,12 +165,12 @@ _RULES: list[tuple[str, str | None, dict, str]] = [
     # Часы.
     (r"(который|сколько) (сейчас )?(час|времени)|сколько время|какое (сегодня )?число|"
      r"какой (сегодня )?день", "clock", {"action": "now"}, ""),
+    (r"(поставь )?таймер на паузу|приостанови таймер", "clock",
+     {"action": "timer_pause"}, ""),
     (r"(поставь |запусти |заведи |засеки )?таймер на (?P<d>.+)", "clock",
      {"action": "timer_set", "duration": "@d"}, ""),
     (r"(отмени|сбрось|удали|выключи|останови) таймер|таймер стоп|стоп таймер", "clock",
      {"action": "timer_cancel"}, ""),
-    (r"(поставь )?таймер на паузу|приостанови таймер", "clock",
-     {"action": "timer_pause"}, ""),
     (r"возобнови таймер|сними таймер с паузы|продолжи таймер", "clock",
      {"action": "timer_resume"}, ""),
     (r"(добавь|прибавь) (к таймеру )?(?P<d>.+)( к таймеру)?", "clock",
@@ -245,26 +251,160 @@ def _city(v: str) -> str | None:
 _CHECK = {"t": _alarm_time, "t2": _alarm_time, "city": _city, "v": _level, "v2": _level, "d": _duration, "app": _app, "song": _song, "yq": _query, "ch": _query}
 
 
-def match(text: str) -> Quick | None:
+_OFFLINE_ACTIONS = {
+    "desktop_context": {"resume"},
+    "computer_control": {"volume_up", "volume_down", "volume_set", "mute", "unmute",
+                         "brightness_up", "brightness_down", "brightness_set"},
+    "clock": {"now", "timer_set", "timer_list", "timer_cancel", "timer_pause",
+              "timer_resume", "timer_add", "stopwatch_start", "stopwatch_stop",
+              "alarm_stop", "alarm_snooze"},
+}
+
+
+_FILM_PLAY = r"(?:поставь|включи|открой|запусти|воспроизведи|найди|покажи|посмотри|хочу посмотреть|поставить)"
+_KINO = r"(?:киног[оа]|kinogo)"
+_YT = r"(?:ютуб(?:е|а)?|youtube)"
+_PROVIDER = r"(?:через|на|в)\s+(?:сайт(?:е)?\s+)?"
+_NO_YT = re.compile(rf"\bне\s+(?:{_PROVIDER})?{_YT}\b", re.I)
+_LAST_FILM = re.compile(r"(?:его|её|ее|это|этот фильм|этот сериал|то же|тот же)", re.I)
+
+
+def youtube_requested(text: str) -> bool:
+    from core.wake_vosk import split_address
+
+    _, text = split_address(text or "", allow_alias=os.getenv("JARVIS_WAKE_CHARLIE", "1") != "0")
+    return not _NO_YT.search(text) and bool(
+        re.search(rf"\b{_PROVIDER}{_YT}\b|^\s*{_FILM_PLAY}\s+{_YT}\b", text, re.I)
+        or re.search(r"https?://(?:www\.)?(?:youtube\.com|youtu\.be)/", text, re.I)
+    )
+
+
+_SERIES_NUMBERS = {
+    word: number
+    for number, forms in enumerate((
+        "один одна первый первая первую", "два две второй вторая вторую",
+        "три третий третья третью", "четыре четвёртый четвёртая четвёртую",
+        "пять пятый пятая пятую", "шесть шестой шестая шестую",
+        "семь седьмой седьмая седьмую", "восемь восьмой восьмая восьмую",
+        "девять девятый девятая девятую", "десять десятый десятая десятую",
+    ), 1)
+    for word in forms.replace("ё", "е").split()
+}
+_SERIES_NUMBER = r"(?:\d{1,3}|" + "|".join(_SERIES_NUMBERS) + r")"
+
+
+def _episode_number(token: str) -> int:
+    return int(token) if token.isdecimal() else _SERIES_NUMBERS[token.casefold().replace("ё", "е")]
+
+
+def _series_request(command: str) -> dict | None:
+    command = command.casefold().replace("ё", "е").strip(" ,.!?")
+    if re.fullmatch(r"(?:а |ну )?(?:это |сейчас )?(?:какая|какой)(?: это| сейчас)? (?:сезон(?: и серия)?|серия)(?: сейчас| идет)?", command):
+        return {"action": "series_position"}
+    if re.fullmatch(r"(?:(?:где) (?:я |мы )?остановил(?:ся|ась|ись)(?: (?:в сериале|с сериалом))?|"
+        r"(?:на чем|на чём) (?:я |мы )?остановил(?:ся|ась|ись) (?:в сериале|с сериалом))", command):
+        return {"action": "series_position"}
+    if re.fullmatch(r"(?:(?:включи|поставь|открой|давай) )?(?:следующую серию|следующая серия)", command):
+        return {"action": "series_next"}
+    if re.fullmatch(r"(?:начни|поставь|включи) (?:(?:эту|текущую) )?серию (?:с начала|сначала)", command):
+        return {"action": "series_restart"}
+    resume = re.fullmatch(
+        r"(?:продолжи(?:ть)? (?:смотреть )?сериал(?:\s+(.+))?|"
+        r"продолжи(?:ть)? (?:просмотр|с того места(?: где (?:я )?остановился)?)|"
+        r"(?:включи|поставь) с того места(?: где (?:я )?остановился)?)",
+        command.replace(",", ""),
+    )
+    if resume:
+        return {"action": "series_resume", "title": (resume[1] or "").strip(" «»\"")}
+    episode = re.fullmatch(
+        rf"(?:(?:включи|поставь|открой) )?(?:({_SERIES_NUMBER})\s*сезон[ ,]+)?"
+        rf"(?:({_SERIES_NUMBER})(?:\s*[-–]?\s*(?:ая|ую|я))?\s*сери[яю]|серия\s+({_SERIES_NUMBER}))",
+        command,
+    )
+    if episode:
+        return {"action": "series_episode", "season": _episode_number(episode[1]) if episode[1] else None,
+                "episode": _episode_number(episode[2] or episode[3])}
+    return None
+
+
+def movie_request(text: str, last_movie: dict | None = None) -> dict | None:
+    from core.wake_vosk import split_address
+
+    _, command = split_address(text or "", allow_alias=os.getenv("JARVIS_WAKE_CHARLIE", "1") != "0")
+    command = re.sub(r"^\s*(?:пожалуйста|давай)[,\s]+", "", command.strip(), flags=re.I)
+    contextual = _series_request(command)
+    if contextual:
+        return contextual
+    hit = re.fullmatch(rf"{_FILM_PLAY}\s+(?:(фильм|сериал|кино)\b\s*)?(.*)", command, re.I)
+    if not hit:
+        return None
+    kind, tail = hit.groups()
+    if re.fullmatch(r"(?:на\s+)?(?:паузу|пауза|весь экран|полный экран)", tail.strip(" ,.!?"), re.I):
+        return None
+    kinogo = bool(re.search(rf"\b{_PROVIDER}{_KINO}\b", tail, re.I))
+    denied = _NO_YT.search(tail)
+    youtube = youtube_requested(command)
+    tail = re.sub(rf"(?:\s*,?\s+а)?\s*,?\s+\bне\s+(?:{_PROVIDER})?{_YT}\b.*$", "", tail, flags=re.I)
+    title = re.sub(rf"\b{_PROVIDER}(?:{_KINO}|{_YT})(?:\s+сайт(?:е)?)?\b", "", tail, flags=re.I)
+    title = title.strip(" ,.!?«»\"")
+    if not kind and not kinogo and not (denied and _LAST_FILM.fullmatch(title)) and not (
+        youtube and last_movie and _LAST_FILM.fullmatch(title)
+    ):
+        return None
+    provider = "youtube" if youtube and not kinogo else "kinogo"
+    if not title or _LAST_FILM.fullmatch(title):
+        return {**(last_movie or {"title": ""}), "action": "play", "provider": provider}
+    result = {"action": "play", "provider": provider}
+    if kind and kind.casefold() == "сериал":
+        number = _SERIES_NUMBER.replace("четверт", "четв[её]рт")
+        ordinal = rf"(?P<num>{number})(?:\s*[-–]?\s*(?:ый|ой|ий|ая|ую|я|й))?"
+        while title:
+            title = title.rstrip(" ,.;!?")
+            for key, noun in (("season", r"сезон(?:а|е)?"), ("episode", r"(?:сери[яюи]|эпизод(?:а)?)")):
+                suffix = re.search(
+                    rf"(?:^|[\s,]+(?:и\s+)?)(?:{ordinal}\s*{noun}|{noun}\s*(?P<after>{number}))$",
+                    title, re.I)
+                if suffix:
+                    title = title[:suffix.start()].rstrip(" ,")
+                    result[key] = _episode_number(suffix["num"] or suffix["after"])
+                    break
+            else:
+                break
+        if not {"season", "episode"} & result.keys() and provider == "kinogo":
+            result["action"] = "series_continue"
+        else:
+            result.setdefault("season", 1)
+            result.setdefault("episode", 1)
+    result["title"] = re.sub(r"\b((?:19|20)\d{2})\s+год(?:а|у)?(?:[\s,]+(?:выпуск(?:а)?|выход(?:а)?))?$", r"\1", title, flags=re.I).casefold()
+    return result
+
+
+def match(text: str, *, offline: bool = False, last_movie: dict | None = None) -> Quick | None:
     """Команда целиком — Quick; иначе None (фразу разбирает Gemini)."""
     if not enabled():
         return None
+    request = movie_request(text, last_movie)
+    if request is not None:
+        return Quick("movie_player", request, "", text)
     t = normalize(text)
     if not t:
         return None
-    # Свои команды и паки (core/macros.py) — первыми: их выбрал сам владелец.
-    try:
-        from core.macros import macros
-        hit = macros().match(text)
-    except Exception as exc:
-        logger.debug("Свои команды: %s", exc)
-        hit = None
-    if hit:
-        cmd, _slots = hit
-        if cmd.confirm:
-            return None                           # переспросит Gemini
-        return Quick("macro", {"action": "run", "phrase": text}, "ack", t)
+    if not offline:
+        # Свои команды и паки (core/macros.py) — первыми: их выбрал сам владелец.
+        try:
+            from core.macros import macros
+            hit = macros().match(text)
+        except Exception as exc:
+            logger.debug("Свои команды: %s", exc)
+            hit = None
+        if hit:
+            cmd, _slots = hit
+            if cmd.confirm:
+                return None                           # переспросит Gemini
+            return Quick("macro", {"action": "run", "phrase": text}, "ack", t)
     for rx, tool, args, reply in _COMPILED:
+        if offline and args.get("action") not in _OFFLINE_ACTIONS.get(tool, ()) and args.get("target") != "context":
+            continue
         m = rx.fullmatch(t)
         if not m:
             continue
@@ -282,10 +422,14 @@ def match(text: str) -> Quick | None:
                 out[k] = raw
             else:
                 out[k] = v
+        if tool == "video_control" and re.search(r"\b" + _VIDEO + r"\b", t):
+            out["target"] = "video"
         return Quick(tool, out, reply, t)
     try:
         from core.dialog_context import context
         ctx_quick = context().resolve(t)
+        if offline:
+            return ctx_quick if ctx_quick and ctx_quick.tool == "movie_player" else None
         if ctx_quick is not None:
             return ctx_quick
     except Exception as exc:
@@ -304,7 +448,7 @@ def failed(result) -> bool:
 
 
 # Где ответ нужен словами — само содержимое: время, что играет, сколько осталось.
-_ANSWERS = {("weather", ""), ("clock", "alarm_set"), ("clock", "now"), ("clock", "timer_list"),
+_ANSWERS = {("desktop_context", "resume"), ("weather", ""), ("clock", "alarm_set"), ("clock", "now"), ("clock", "timer_list"),
             ("clock", "timer_cancel"), ("clock", "timer_add"), ("clock", "timer_modify"),
             ("clock", "timer_pause"), ("clock", "timer_resume"),
             ("clock", "stopwatch_stop"), ("clock", "stopwatch_status"), ("music_player", "now_playing")}
