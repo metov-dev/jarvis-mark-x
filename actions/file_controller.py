@@ -63,6 +63,20 @@ def _is_sensitive(p: Path) -> bool:
     return False
 
 
+def _transfer_blocked(path: str, dest: str) -> bool:
+    """Копирование/перенос: защищён источник, папка-приёмник, итоговый путь или любой файл внутри папки."""
+    src, target = Path(path), Path(dest)
+    final = target / src.name if target.is_dir() else target
+    if _is_sensitive(src) or _is_sensitive(target) or _is_sensitive(final):
+        return True
+    if src.is_dir():
+        try:
+            return any(_is_sensitive(item) for item in src.rglob("*"))
+        except OSError:
+            return True
+    return False
+
+
 def deletion_target(raw_path: str) -> Path:
     """Resolve the same full path for confirmation and deletion."""
     import stat
@@ -181,7 +195,7 @@ def file_controller(parameters: dict, player=None) -> str:
             return f"Удалено (в Корзину): {p.name}." if sys.platform == "win32" else f"Удалено: {p.name}."
 
         elif action == "move":
-            if _is_sensitive(Path(path)) or _is_sensitive(Path(dest)):
+            if _transfer_blocked(path, dest):
                 return "Операция с защищёнными файлами запрещена."
             shutil.move(path, dest)
             if player:
@@ -189,7 +203,7 @@ def file_controller(parameters: dict, player=None) -> str:
             return f"Перемещено в {dest}."
 
         elif action == "copy":
-            if _is_sensitive(Path(path)) or _is_sensitive(Path(dest)):
+            if _transfer_blocked(path, dest):
                 return "Операция с защищёнными файлами запрещена."
             src = Path(path)
             if src.is_dir():

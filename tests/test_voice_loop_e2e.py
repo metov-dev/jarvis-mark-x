@@ -745,9 +745,8 @@ def test_причина_разрыва_видна_сквозь_exceptiongroup():
     assert "1008" in jarvis_main._root_error_text(err)
 
 
-@pytest.mark.asyncio
-async def test_команда_выполняется_если_имя_пришло_после_вызова(по_имени, monkeypatch):
-    """Расшифровка с именем отстала от вызова инструмента — команда не теряется."""
+async def _tool_in_wake_window(по_имени, monkeypatch, heard, tool, args):
+    """Имя в расшифровке не прозвучало, но детектор слышал «Джарвис»: окно открыто."""
     выполнено = []
 
     async def поддельный_инструмент(self, fc):
@@ -756,12 +755,8 @@ async def test_команда_выполняется_если_имя_пришл�
     monkeypatch.setattr(jarvis_main.Jarvis, "_execute_tool", поддельный_инструмент)
 
     j = по_имени.jarvis
-    j._wake_command_until = time.monotonic() + 10   # окно после услышанного «Джарвис»
-    session = _ToolSession([
-        _resp(heard="открой хром"),
-        _tool_resp("open_app", {"app_name": "chrome"}),
-        _resp(heard=" Джарвис"),
-    ])
+    j._wake_command_until = time.monotonic() + 10
+    session = _ToolSession([_resp(heard=heard), _tool_resp(tool, args)])
     j.session = session
     j.audio_in_queue = asyncio.Queue()
     j._turn_done_event = asyncio.Event()
@@ -772,8 +767,23 @@ async def test_команда_выполняется_если_имя_пришл�
             break
         await asyncio.sleep(0.01)
     task.cancel()
+    return выполнено
 
-    assert выполнено == ["open_app"]
+
+@pytest.mark.asyncio
+async def test_окно_после_джарвис_разрешает_безопасный_инструмент(по_имени, monkeypatch):
+    """Имя исказилось в расшифровке, но вопрос не теряется (лог 23.11)."""
+    done = await _tool_in_wake_window(по_имени, monkeypatch, "какого цвета небо", "web_search",
+                                      {"query": "цвет неба"})
+    assert done == ["web_search"]
+
+
+@pytest.mark.asyncio
+async def test_окно_после_джарвис_не_даёт_менять_систему_без_фразы(по_имени, monkeypatch):
+    """23.11 23:33: Gemini сам вызвал brightness_set при пустой расшифровке — окно этого не разрешает."""
+    done = await _tool_in_wake_window(по_имени, monkeypatch, "", "computer_control",
+                                      {"action": "brightness_set", "value": "400"})
+    assert done == []
 
 
 class _SwitchSession(_Session):
