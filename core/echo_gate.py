@@ -20,6 +20,25 @@ import collections
 import os
 
 
+class WakeLeadIn:
+    """Восстанавливает два тихих кадра перед голосом для поиска имени."""
+
+    def __init__(self):
+        self._pending: collections.deque[bytes] = collections.deque()
+
+    def clear(self):
+        self._pending.clear()
+
+    def push(self, pcm: bytes, *, voice: bool) -> tuple[bytes, ...]:
+        if voice:
+            frames = (*self._pending, pcm)
+            self.clear()
+            return frames
+        silence = (bytes(len(self._pending.popleft())),) if len(self._pending) >= 2 else ()
+        self._pending.append(pcm)
+        return silence
+
+
 class EchoGate:
     MIN_LEVEL = 0.02        # тише — колонки молчат, решает обычный порог
     # Во сколько раз голос должен быть громче эха. Было 3.0: в игре с колонками

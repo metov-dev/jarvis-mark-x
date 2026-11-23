@@ -133,3 +133,22 @@ def test_window(tmp_path):
         assert saved == {"gemini_api_key": "AIza-9"} and "ключей 1" in dlg.restore_status.text()
     finally:
         dlg.close()
+
+
+
+def test_restore_reports_partial_failure_when_keys_cannot_be_saved(tmp_path, monkeypatch):
+    source, dest = tmp_path / "source", tmp_path / "dest"
+    source.mkdir()
+    dest.mkdir()
+    (source / "clock.json").write_text('{"new": true}', encoding="utf-8")
+    (dest / "clock.json").write_text('{"old": true}', encoding="utf-8")
+    snapshot = B.create(tmp_path / "profile", "test-pass", root=source, keys={"demo": "value"})
+    monkeypatch.setattr(B, "_reload", lambda: None)
+
+    with pytest.raises(B.BackupError, match=r"не удалось сохранить ключи.*Восстановлено файлов: 1"):
+        B.restore(Path(snapshot["path"]), "test-pass", root=dest, keys_now={},
+                  save_keys=lambda _: False)
+
+    safety = next(tmp_path.glob("jarvis-before-restore-*"))
+    B.restore(safety, "test-pass", root=dest, keys_now={}, save_keys=lambda _: None)
+    assert json.loads((dest / "clock.json").read_text(encoding="utf-8")) == {"old": True}

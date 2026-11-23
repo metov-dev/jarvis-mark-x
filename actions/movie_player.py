@@ -202,14 +202,26 @@ def _volume(direction: str, player=None) -> str:
 
 
 # ─── Публичная точка входа ────────────────────────────────────────────────────
-def movie_player(parameters: dict, player=None) -> str:
-    """Фильмы — VK Видео в окне Джарвиса: найти, открыть, запустить, полный
+def movie_player(parameters: dict, player=None, launch=None) -> str:
+    """Фильмы в окне Джарвиса: найти, открыть, запустить, полный
     экран. Остальные действия — управление тем, что идёт (video_player)."""
     from actions import video_player
     action = (parameters.get("action") or "").strip().lower()
     title = (parameters.get("title") or parameters.get("query") or "").strip()
+    if action in {"series_continue", "series_resume", "series_position",
+                  "series_next", "series_restart", "series_episode"}:
+        return video_player.series_context(action, title, player, launch,
+                                           season=parameters.get("season"), episode=parameters.get("episode"))
     if action in ("play", "start", "запустить", "включить"):
-        return video_player.play_film(title, player)
+        launch = launch or video_player.MovieLaunch()
+        provider = (parameters.get("provider") or "kinogo").strip().lower()
+        if provider == "vk":
+            return video_player.play_film(title, player, launch)
+        if parameters.get("season") is not None:
+            return video_player.play_kinogo(
+                title, player, launch, episode=(parameters["season"], parameters.get("episode", 1)),
+            )
+        return video_player.play_kinogo(title, player, launch)
     res = video_player.control({"volume_up": "volume_up", "volume_down": "volume_down"}
                                .get(action, action), parameters.get("value"))
     return res or "Сейчас в окне Джарвиса ничего не идёт, сэр."

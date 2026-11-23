@@ -10,8 +10,8 @@
     команды, конфетти, катящийся мяч и «подпрыгнувшая» цифра счёта.
 Наведи мышь — откроется панель: плеер с кнопками, таймер, последний ответ.
 Клик по капсуле возвращает окно Джарвиса. В полноэкранной игре или фильме
-капсула прячется. В покое (ничего не играет, никто не зовёт, таймер не
-идёт) она через IDLE_HIDE_SEC сама уходит и возвращается на событие.
+капсула прячется. В покое она уходит по таймеру, даже если продолжает играть
+музыка. Правый клик или кнопка скрытия сворачивают её до нового обращения.
 
 Рисование: окно прозрачное, клики проходят сквозь пустые пиксели сами —
 маску окна не меняем (на Windows прозрачное окно с меняющейся маской не
@@ -38,14 +38,14 @@ STATE_RGB = {
     "idle": (48, 208, 190), "listening": (70, 232, 128), "thinking": (182, 226, 64),
     "speaking": (255, 138, 52), "offline": (255, 70, 96), "muted": (105, 112, 124),
 }
-STATE_LABEL = {"idle": "ГОТОВ", "listening": "СЛУШАЮ", "thinking": "ДУМАЮ", "speaking": "ГОВОРЮ",
-               "offline": "НЕТ СВЯЗИ", "muted": "МИКРОФОН ВЫКЛ"}
+STATE_LABEL = {"idle": "Готов", "listening": "Слушаю", "thinking": "Думаю", "speaking": "Говорю",
+               "offline": "Нет связи", "muted": "Микрофон выключен"}
 _STATE_FROM_UI = {"IDLE": "idle", "LISTENING": "listening", "THINKING": "thinking", "PROCESSING": "thinking",
                   "SPEAKING": "speaking", "RECONNECTING": "offline", "INITIALISING": "thinking"}
 
 # Размеры видов (ширина, высота) в точках экрана.
-SIZES = {"compact": (168, 34), "activity": (292, 34), "listening": (312, 48), "banner": (420, 66),
-         "expanded": (440, 196), "match": (300, 34), "goal": (420, 84),
+SIZES = {"compact": (168, 34), "activity": (340, 38), "listening": (312, 48), "banner": (420, 66),
+         "expanded": (440, 108), "match": (300, 34), "goal": (420, 84),
          "task": (380, 56), "confirm": (440, 106), "drop": (420, 92), "upload": (380, 56),
          "chat": (460, 196), "file": (420, 92)}
 EXPANDED_MATCH_EXTRA = 40      # строка матча в развёрнутой панели
@@ -78,6 +78,7 @@ class Media:
     artist: str = ""
     source: str = "music"          # "music" | "video"
     playing: bool = True
+    fullscreen: bool = False
 
 
 @dataclass
@@ -523,7 +524,10 @@ class IslandModel:
         if not self.timer_label:
             return ""
         if self.timer_end:
-            left = max(0, int(self.timer_end - (now_wall or time.time())))
+            remaining = self.timer_end - (time.time() if now_wall is None else now_wall)
+            if remaining <= 0:
+                return ""
+            left = math.ceil(remaining)
             h, rem = divmod(left, 3600)
             m, s = divmod(rem, 60)
             clock = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
@@ -531,10 +535,11 @@ class IslandModel:
         return self.timer_label
 
     def quiet(self, now: float | None = None) -> bool:
-        """Нечего показывать: ждёт имени, нет ответа, музыки и идущего таймера.
+        """Нечего показывать: ждёт имени, нет ответа и идущего таймера.
         Ближайший будильник или звонок по расписанию — не повод висеть на экране."""
-        live_timer = bool(self.timer_end) or self.timer_label.startswith(("Секундомер", "Сон"))
-        return (self.state == "idle" and not self.banner(now) and not (self.media and self.media.playing)
+        live_timer = (self.timer_end > time.time() if self.timer_end
+                      else self.timer_label.startswith("Секундомер · "))
+        return (self.state == "idle" and not self.banner(now)
                 and not live_timer and not self.match and not self.task_view(now)
                 and not self.confirm_view(now) and not self.upload_view(now) and not self.drop_hover
                 and not self.chat_view(now) and not self.file_choice_view(now))
@@ -578,6 +583,15 @@ class IslandModel:
 
 # ── данные в фоне: что играет, таймеры ──────────────────────────────────────
 
+def _video_title(title: str) -> str:
+    title = " ".join(title.split())
+    title = re.sub(r"\s*(?:- YouTube|[—|] VK Видео)$", "", title, flags=re.I)
+    if re.search(r"\s+смотреть онлайн(?:\s+бесплатно)?(?:\s+в .*качестве)?\s*$", title, re.I):
+        title = re.split(r"\s+смотреть онлайн", title, maxsplit=1, flags=re.I)[0]
+        title = re.sub(r"^(?:Фильм|Сериал)\s+", "", title, flags=re.I)
+    return title.strip() or "Видео"
+
+
 def poll_media() -> Media | None:
     """Видео Джарвиса важнее музыки: если идёт фильм, управляем им."""
     try:
@@ -591,9 +605,8 @@ def poll_media() -> Media | None:
                     title = (t.eval("document.title") or "") if t else ""
                 except Exception:
                     pass
-                for tail in (" - YouTube", " — VK Видео", " | VK Видео"):
-                    title = title.split(tail)[0]
-                return Media(title.strip() or "Видео", "", "video", not st.get("paused", True))
+                return Media(_video_title(title), source="video", playing=not st.get("paused", True),
+                             fullscreen=bool(st.get("fs")))
     except Exception as exc:
         logger.debug("Капсула, видео: %s", exc)
     try:
@@ -626,8 +639,9 @@ def poll_timer() -> tuple[str, float]:
         logger.debug("Капсула, часы: %s", exc)
     try:
         from actions.sleep_timer import sleep_timer_manager as m
-        if m.is_active():
-            return "Сон", time.time() + m.get_remaining_seconds()
+        remaining = m.get_remaining_seconds()
+        if remaining > 0:
+            return "Таймер сна", time.time() + remaining
     except Exception as exc:
         logger.debug("Капсула, таймер сна: %s", exc)
     try:
@@ -708,7 +722,8 @@ def fullscreen_app_active() -> bool:
 # ── окно ─────────────────────────────────────────────────────────────────────
 
 from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, pyqtSignal  # noqa: E402
-from PyQt6.QtGui import (QBrush, QColor, QConicalGradient, QCursor, QFont, QLinearGradient, QPainter,  # noqa: E402
+from PyQt6.QtGui import (QBrush, QColor, QConicalGradient, QCursor, QFont, QFontMetricsF, QLinearGradient,  # noqa: E402
+                         QPainter,
                          QPainterPath, QPen, QRadialGradient)
 from PyQt6.QtWidgets import QApplication, QLineEdit, QWidget  # noqa: E402
 
@@ -751,7 +766,7 @@ class IslandGlow(QWidget):
     Windows полупрозрачный пиксель ловит клики, и ореол в самом окне капсулы
     перехватывал бы вкладки браузера под ним."""
 
-    MARGIN_X, MARGIN_Y = 150, 110
+    MARGIN_X, MARGIN_Y = 30, 22
 
     def __init__(self):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
@@ -788,8 +803,8 @@ class IslandGlow(QWidget):
         r, g, b = self.rgb
         a = self.strength
         grad = QRadialGradient(QPointF(0, 0), 1.0)
-        grad.setColorAt(0.0, QColor(r, g, b, int(120 * a)))
-        grad.setColorAt(0.45, QColor(r, g, b, int(55 * a)))
+        grad.setColorAt(0.0, QColor(r, g, b, int(54 * a)))
+        grad.setColorAt(0.45, QColor(r, g, b, int(21 * a)))
         grad.setColorAt(1.0, QColor(r, g, b, 0))
         p.translate(c.x(), c.y() + self.cap.height() * 0.15)
         p.scale(rx, ry)
@@ -846,6 +861,9 @@ class Island(QWidget):
         self._hover_raw, self._hover_t = False, 0.0
         self.wanted = False                        # окно Джарвиса свёрнуто
         self.dormant = False                       # ушла сама в покое — вернётся на событие
+        self._dismissed = False
+        self._fullscreen = False
+        self._closed = False
         self._quiet_since = 0.0
         self._view, self._ca = "compact", 0.0      # какой вид сейчас нарисован и его прозрачность
         self._w, self._h = SIZES["compact"]
@@ -875,13 +893,14 @@ class Island(QWidget):
         self._was_listening = False
         self._glow = None
         self._glow_rgb, self._glow_a = list(STATE_RGB["idle"]), 0.0
-        if os.getenv("JARVIS_ANIMATIONS", "1").strip().lower() not in ("0", "false", "no", "off"):
+        if (os.getenv("JARVIS_ISLAND_GLOW") == "1"
+                and os.getenv("JARVIS_ANIMATIONS", "1").strip().lower() not in ("0", "false", "no", "off")):
             glow = self._glow = IslandGlow()
             # Свечение — отдельное окно без родителя: уходит вместе с капсулой,
             # а не живёт после неё.
             self.destroyed.connect(lambda *_: _drop_glow(glow))
 
-        self._state_sig.connect(self.model.set_state)
+        self._state_sig.connect(self._set_state)
         self._level_sig.connect(self._feed_level)
         self._reply_sig.connect(lambda t: self.model.notify("ДЖАРВИС", t, "reply"))
         self._event_sig.connect(lambda title, text: self.model.notify(title, text, "event"))
@@ -891,7 +910,7 @@ class Island(QWidget):
         self._football_sig.connect(self.model.football)
         self._tool_sig.connect(lambda name, args: self.model.tool_start(name, args))
         self._tool_end_sig.connect(lambda name, ok: self.model.tool_end(name, ok))
-        self._confirm_sig.connect(lambda q: self.model.ask_confirm(q))
+        self._confirm_sig.connect(self._ask_confirm)
         self._confirm_done_sig.connect(lambda: setattr(self.model, "confirm", None))
         self._upload_sig.connect(lambda name, frac, stage: self.model.set_upload(name, frac, stage))
         self._trouble_sig.connect(lambda title, text: self.model.trouble(title, text))
@@ -910,7 +929,7 @@ class Island(QWidget):
             threading.Thread(target=self._poll, daemon=True, name="island-poll").start()
             self._fs_tmr = QTimer(self)
             self._fs_tmr.timeout.connect(self._check_fullscreen)
-            self._fs_tmr.start(1000)
+            self._fs_tmr.start(350)
         self._place()
 
     # ── вход из любого потока ───────────────────────────────────────────────
@@ -969,12 +988,16 @@ class Island(QWidget):
 
     # ── чат ─────────────────────────────────────────────────────────────────
     def _open_chat(self, file: str = ""):
+        if self._closed:
+            return
+        self._dismissed = False
         self.model.open_chat(file)
         self.dormant, self._quiet_since = False, 0.0
         if not self.wanted:                # окно Джарвиса развёрнуто — капсула всё равно нужна
             self.wanted = True
         self._apply_visibility()
-        self._set_focusable(True)
+        if self.isVisible():
+            self._set_focusable(True)
         self._edit.clear()
 
     def close_chat(self):
@@ -1018,18 +1041,40 @@ class Island(QWidget):
         if not on and self.model.chat_view():
             return                         # открыт чат — капсула остаётся, пока его не закроют
         if on and not self.wanted:
-            self.dormant, self._quiet_since = False, 0.0      # свернули — показаться хотя бы на миг
+            if not self._dismissed:
+                self.dormant, self._quiet_since = False, 0.0
+            if hasattr(self, "_fs_tmr"):
+                self._fullscreen = fullscreen_app_active()
         self.wanted = on
         self._apply_visibility()
 
+    def _set_state(self, state: str):
+        previous = self.model.state
+        self.model.set_state(state)
+        if self.model.state == "listening" and previous != "listening":
+            self._dismissed = False
+
+    def _ask_confirm(self, question: str):
+        self._dismissed = False
+        self.model.ask_confirm(question)
+
+    def _dismiss(self):
+        self._dismissed = self.dormant = True
+        self.close_chat()
+        self._hide_now()
+
     def _maybe_wake(self, *_):
         """Событие (позвали, ответ, музыка, таймер) — вернуться из покоя."""
-        if self.dormant and not self.model.quiet():
+        if not self._dismissed and not self._closed and self.dormant and not self.model.quiet():
             self.dormant, self._quiet_since = False, 0.0
             self._apply_visibility()
 
-    def _apply_visibility(self, fullscreen: bool = False):
-        show = self.wanted and not fullscreen and not self.dormant
+    def _apply_visibility(self, fullscreen: bool | None = None):
+        if fullscreen is not None:
+            self._fullscreen = fullscreen
+        media = self.model.media
+        blocked = self._fullscreen or bool(media and media.fullscreen)
+        show = self.wanted and not (blocked or self.dormant or self._dismissed or self._closed)
         if show:
             self._leaving = False
             if not self.isVisible():
@@ -1044,10 +1089,12 @@ class Island(QWidget):
                     self._glow.show()
                 self.show()
                 self.raise_()
+                if self.model.chat_view():
+                    self._set_focusable(True)
                 self._last = time.monotonic()
                 self._tmr.start(16)
         elif self.isVisible():
-            if fullscreen:                 # игра на весь экран — сразу, без анимации
+            if blocked:                    # полноэкранный режим — сразу, без анимации
                 logger.info("Капсула: спрятана — впереди полноэкранное окно")
                 self._hide_now()
             else:                          # Джарвис развернулся — капсула втягивается
@@ -1056,14 +1103,17 @@ class Island(QWidget):
     def _hide_now(self):
         self._leaving = False
         self._r = self._vr = self._s = self._vs = 0.0
+        self.hovered = self._hover_raw = False
+        self._hover_t = 0.0
+        self._buttons.clear()
+        self._face_rect = QRectF()
         if self._glow is not None:
             self._glow.hide()
         self.hide()
         self._tmr.stop()
 
     def _check_fullscreen(self):
-        if self.wanted:
-            self._apply_visibility(fullscreen_app_active())
+        self._apply_visibility(fullscreen_app_active())
 
     def _poll(self):
         while not self._poll_stop.wait(2.0):
@@ -1081,9 +1131,13 @@ class Island(QWidget):
         self.model.media = media
         self.model.timer_label, self.model.timer_end = label, end
         # Новый трек — коротко показать, что играет.
-        if media and media.playing and (not was or was.title != media.title):
-            self.model.notify("ИГРАЕТ" if media.source == "music" else "ВИДЕО",
-                              media.title + (f" — {media.artist}" if media.artist else ""), "event", sec=3.5)
+        if media and media.playing and not media.fullscreen and (
+            not was or (was.source, was.title, was.artist) != (media.source, media.title, media.artist)
+        ):
+            text = media.title if not media.artist else f"{media.title} · {media.artist}"
+            self.model.notify("ИГРАЕТ" if media.source == "music" else "ВИДЕО", text, "event", sec=3.5)
+        if bool(was and was.fullscreen) != bool(media and media.fullscreen):
+            self._apply_visibility()
 
     def _feed_level(self, v: float):
         self.model.level = max(self.model.level, max(0.0, min(1.0, v)))
@@ -1215,7 +1269,13 @@ class Island(QWidget):
 
     def _expanded_extra(self) -> int:
         m = self.model
-        extra = EXPANDED_MATCH_EXTRA if m.match else 0
+        extra = 20 if m.media else 0
+        if m.timer_text():
+            extra += 24
+        if m.last_reply:
+            extra += 46
+        if m.match:
+            extra += EXPANDED_MATCH_EXTRA
         t = m.task_view()
         if t:
             extra += 10 + EXPANDED_STEP_H * min(TASK_STEPS_SHOWN, len(t.steps))
@@ -1237,17 +1297,19 @@ class Island(QWidget):
 
     def _compact_width(self) -> float:
         """Компактная капсула — по длине подписи («Будильник 07:00» не обрезается)."""
-        from PyQt6.QtGui import QFontMetricsF
         f = QFont("Segoe UI", 1)
-        f.setPointSizeF(7.5)
-        f.setBold(True)
-        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.6)
+        f.setPointSizeF(9)
+        f.setWeight(QFont.Weight.DemiBold)
         text_w = QFontMetricsF(f).horizontalAdvance(self._compact_label())
         return max(float(SIZES["compact"][0]), min(300.0, 36 + text_w + 18 + (18 if self.model.eyes else 0)))
 
     def closeEvent(self, ev):
         """Капсулу закрыли совсем — остановить анимацию и убрать свечение."""
+        self._closed = True
+        self.wanted = False
         self._tmr.stop()
+        if hasattr(self, "_fs_tmr"):
+            self._fs_tmr.stop()
         self._poll_stop.set()
         if self._glow is not None:
             self._glow.hide()
@@ -1262,6 +1324,11 @@ class Island(QWidget):
 
     def mouseReleaseEvent(self, ev):
         pos = ev.position()
+        if ev.button() == Qt.MouseButton.RightButton and self.capsule_rect().contains(pos):
+            self._dismiss()
+            return
+        if ev.button() != Qt.MouseButton.LeftButton:
+            return
         # Тык по лицу — лицо реагирует, а не открывает окно (много тыков — кружится).
         if self._face_rect.contains(pos) and self._view != "confirm":
             self.poke_face()
@@ -1272,6 +1339,8 @@ class Island(QWidget):
                     self.on_open()
                 elif name == "chat":
                     self._open_chat()
+                elif name == "dismiss":
+                    self._dismiss()
                 elif name == "chat_close":
                     self.close_chat()
                 elif name == "chat_send":
@@ -1403,7 +1472,10 @@ class Island(QWidget):
         radius = self._radius(cap)
         path = QPainterPath()
         path.addRoundedRect(cap, radius, radius)
-        p.fillPath(path, QColor(0, 0, 0, 250))
+        surface = QLinearGradient(cap.topLeft(), cap.bottomLeft())
+        surface.setColorAt(0.0, QColor(30, 35, 42))
+        surface.setColorAt(1.0, QColor(17, 21, 26))
+        p.fillPath(path, QBrush(surface))
         m = self.model
         if m.mode(self.hovered) == "listening":
             self._paint_listen_glow(p, path, cap)
@@ -1419,11 +1491,13 @@ class Island(QWidget):
         p.setClipPath(path)
         # Содержимое: проявляется, когда капля почти растеклась, и при смене вида
         # сначала гаснет старое (self._ca) — два вида друг на друга не ложатся.
-        p.setOpacity(min(1.0, max(0.0, (self._s - 0.6) / 0.35)) * self._ca)
-        if self._ca <= 0.01:
+        opacity = min(1.0, max(0.0, (self._s - 0.6) / 0.35)) * self._ca
+        p.setOpacity(opacity)
+        self._buttons.clear()
+        self._face_rect = QRectF()
+        if opacity <= 0.01:
             return
         mode = self._view
-        self._buttons = {}
         white, dim = QColor(238, 243, 246), QColor(138, 150, 161)
         x0, w, h = cap.x(), cap.width(), cap.height()
         if mode == "confirm" and h > 80:
@@ -1444,7 +1518,7 @@ class Island(QWidget):
         if mode == "task" and h > 44:
             self._paint_task(p, cap, white, dim)
             return
-        if mode == "expanded" and h > 110:
+        if mode == "expanded" and h > 92:
             self._paint_expanded(p, cap, white, dim)
             return
         if mode == "listening" and h > 40:
@@ -1482,14 +1556,13 @@ class Island(QWidget):
         media = m.media
         eye_w = 18 if m.eyes else 0
         if mode == "activity" and media and w > 200:
-            self._text(p, QRectF(x0 + 38, 0, w - 80 - eye_w, h), media.title, 9, white)
+            self._text(p, QRectF(x0 + 40, 0, w - 83 - eye_w, h), media.title, 10, white)
             self._eq(p, x0 + w - 32, h / 2, media.playing)
             if m.eyes:
                 self._eye(p, x0 + w - 46, h / 2)
         else:
             label = self._compact_label()
-            self._text(p, QRectF(x0 + 36, 0, w - 50 - eye_w, h), label, 7.5, self._col(235, 0.25),
-                       bold=True, spacing=1.6)
+            self._text(p, QRectF(x0 + 36, 0, w - 50 - eye_w, h), label, 9, white)
             if m.eyes:
                 self._eye(p, x0 + w - 20, h / 2)
 
@@ -1896,8 +1969,7 @@ class Island(QWidget):
         x0, w, h = cap.x(), cap.width(), cap.height()
         cy = cap.center().y()
         self._avatar(p, x0 + 26, cy, 14)
-        dots = "." * (int(self._clock * 2.5) % 4)
-        self._text(p, QRectF(x0 + 56, 0, 120, h), "Слушаю" + dots, 10.5, white, bold=True)
+        self._text(p, QRectF(x0 + 56, 0, 120, h), "Слушаю", 10.5, white, bold=True)
         if self.model.eyes:
             self._eye(p, x0 + 157, cy)            # между «Слушаю…» и волной
         # Волна: живёт от голоса, а в тишине тихо «дышит» — видно, что микрофон открыт.
@@ -1917,8 +1989,8 @@ class Island(QWidget):
         m = self.model
         x0, y0, w = cap.x() + 18, cap.y() + 14, cap.width() - 36
         self._avatar(p, x0 + 12, y0 + 12, 11)
-        self._text(p, QRectF(x0 + 32, y0, w - 140, 24), STATE_LABEL.get(m.state, ""), 7.5,
-                   self._col(235, 0.25), bold=True, spacing=1.6)
+        self._text(p, QRectF(x0 + 32, y0, w - 140, 24), STATE_LABEL.get(m.state, ""), 10, white,
+                   bold=True)
         # «Открыть» — круглая кнопка с «развернуть», как на iPhone.
         open_r = QRectF(x0 + w - 26, y0 - 1, 26, 26)
         p.setPen(Qt.PenStyle.NoPen)
@@ -1931,6 +2003,10 @@ class Island(QWidget):
         p.drawEllipse(chat_r)
         draw_icon(p, "speak", chat_r.center(), 12, white)
         self._buttons["chat"] = chat_r
+        hide_r = QRectF(chat_r.x() - 70, y0 - 1, 62, 26)
+        p.drawRoundedRect(hide_r, 13, 13)
+        self._text(p, hide_r, "Скрыть", 8, white, align=Qt.AlignmentFlag.AlignCenter)
+        self._buttons["dismiss"] = hide_r
         y = y0 + 38
         t = m.task_view()
         if t:

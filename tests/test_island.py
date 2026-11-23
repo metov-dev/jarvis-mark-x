@@ -56,6 +56,17 @@ def test_states_and_timer():
     assert m.timer_text() == "Звонок в 06:00"
 
 
+def test_expired_countdown_is_hidden_and_allows_auto_hide(monkeypatch):
+    m = ui.IslandModel(timer_label="Сон", timer_end=1000.5)
+    monkeypatch.setattr(ui.time, "time", lambda: 1000.0)
+    assert m.timer_text() == "Сон · 0:01"
+    assert not m.quiet()
+
+    monkeypatch.setattr(ui.time, "time", lambda: 1000.5)
+    assert m.timer_text() == ""
+    assert m.quiet()
+
+
 # ── окно ─────────────────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -167,7 +178,7 @@ def test_click_opens_jarvis_and_player_buttons_work(island, monkeypatch):
     w.enterEvent(None)                                          # наведение — с задержкой
     _settle(w, app, 1.4)
     w.repaint()
-    assert set(w._buttons) == {"open", "chat", "previous", "toggle", "next"}   # «Написать» — чат в капсуле
+    assert set(w._buttons) == {"open", "chat", "dismiss", "previous", "toggle", "next"}   # «Написать» — чат в капсуле
     for name in ("next", "toggle"):
         r = w._buttons[name].center()
         QTest.mouseClick(w, Qt.MouseButton.LeftButton, pos=QPoint(int(r.x()), int(r.y())))
@@ -184,7 +195,7 @@ def test_new_track_announced_briefly(island):
     w, app, _ = island
     w._set_media(ui.Media("Believer", "Imagine Dragons", "music", True), "", 0)
     b = w.model.banner()
-    assert b and b.title == "ИГРАЕТ" and "Believer — Imagine Dragons" in b.text
+    assert b and b.title == "ИГРАЕТ" and "Believer · Imagine Dragons" in b.text
     w.model.banners.clear()
     w._set_media(ui.Media("Believer", "Imagine Dragons", "music", True), "", 0)
     assert w.model.banner() is None                             # тот же трек — без повторов

@@ -4,7 +4,7 @@ Uses native Win32 user32.RegisterHotKey for zero-latency, reliable system-wide s
 - F8: Wake JARVIS / Bring to front / Unmute and listen
 - Ctrl+Shift+J: Alternative wake shortcut
 - Ctrl+Shift+M: Toggle mute globally from any app/game
-- F9: «Джарвис ошибся» — сохранить последние секунды микрофона для разбора
+- F9 / Ctrl+Alt+9: «Джарвис ошибся» — сохранить последние секунды микрофона для разбора
 """
 
 import ctypes
@@ -18,9 +18,11 @@ logger = logging.getLogger(__name__)
 
 VK_F8 = 0x77
 VK_F9 = 0x78
+VK_9 = 0x39
 VK_J = 0x4A
 VK_M = 0x4D
 
+MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
 MOD_NOREPEAT = 0x4000
@@ -49,7 +51,6 @@ class GlobalHotkeyManager:
         self._running = True
         self._thread = threading.Thread(target=self._message_loop, name="GlobalHotkeys", daemon=True)
         self._thread.start()
-        logger.info("[Hotkeys] Global hotkeys active: F8 / Ctrl+Shift+J (Wake), Ctrl+Shift+M (Mute), F9 (ошибка)")
 
     def stop(self):
         self._running = False
@@ -63,14 +64,20 @@ class GlobalHotkeyManager:
         user32 = ctypes.windll.user32
         self._thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
 
-        # ID 1: F8
-        user32.RegisterHotKey(None, 1, MOD_NOREPEAT, VK_F8)
-        # ID 2: Ctrl+Shift+J
-        user32.RegisterHotKey(None, 2, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_J)
-        # ID 3: Ctrl+Shift+M
-        user32.RegisterHotKey(None, 3, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_M)
-        # ID 4: F9 — «Джарвис ошибся»
-        user32.RegisterHotKey(None, 4, MOD_NOREPEAT, VK_F9)
+        bindings = (
+            (1, 0, VK_F8, "F8"),
+            (2, MOD_CONTROL | MOD_SHIFT, VK_J, "Ctrl+Shift+J"),
+            (3, MOD_CONTROL | MOD_SHIFT, VK_M, "Ctrl+Shift+M"),
+            (4, 0, VK_F9, "F9"),
+            (5, MOD_CONTROL | MOD_ALT, VK_9, "Ctrl+Alt+9"),
+        )
+        registered = {}
+        for hotkey_id, mods, key, label in bindings:
+            if user32.RegisterHotKey(None, hotkey_id, mods | MOD_NOREPEAT, key):
+                registered[hotkey_id] = label
+            else:
+                logger.warning("[Hotkeys] Не удалось зарегистрировать %s", label)
+        logger.info("[Hotkeys] Активные сочетания: %s", ", ".join(registered.values()) or "нет")
 
         msg = wintypes.MSG()
         try:
@@ -92,7 +99,7 @@ class GlobalHotkeyManager:
                                 self.on_mute()
                             except Exception as exc:
                                 logger.warning("Error in on_mute callback: %s", exc)
-                    elif hotkey_id == 4:
+                    elif hotkey_id in (4, 5):
                         if self.on_report:
                             try:
                                 self.on_report()
@@ -101,7 +108,5 @@ class GlobalHotkeyManager:
                 user32.TranslateMessage(ctypes.byref(msg))
                 user32.DispatchMessageW(ctypes.byref(msg))
         finally:
-            user32.UnregisterHotKey(None, 1)
-            user32.UnregisterHotKey(None, 2)
-            user32.UnregisterHotKey(None, 3)
-            user32.UnregisterHotKey(None, 4)
+            for hotkey_id in registered:
+                user32.UnregisterHotKey(None, hotkey_id)

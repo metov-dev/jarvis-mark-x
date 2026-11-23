@@ -110,6 +110,8 @@ class PCBridge:
                 # поля иначе выглядел бы как «не доставлено» (см. delivered).
                 if msg.get("ok") is not None:
                     result["ok"] = msg["ok"]
+                if msg.get("unknown") is True:
+                    result["unknown"] = True
                 if isinstance(msg.get("data"), dict):
                     result["data"] = msg["data"]
                 fut.set_result(result)

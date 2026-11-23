@@ -99,3 +99,29 @@ def test_download_keeps_only_needed_files(tmp_path):
 def test_no_model_no_start(monkeypatch):
     monkeypatch.setattr(K, "find_model", lambda: None)
     assert K.KwsWake(lambda t: None).start() is False
+
+
+def test_delayed_frames_cannot_trigger_wake():
+    import threading
+
+    triggered = threading.Event()
+
+    class MonitoredSpotter(FakeSpotter):
+        def accept_waveform(self, rate, x):
+            super().accept_waveform(rate, x)
+            consumed.set()
+
+    consumed = threading.Event()
+    w = K.KwsWake(lambda _: triggered.set(), spotter_factory=MonitoredSpotter)
+    loud = np.full(1024, 30000, dtype=np.int16).tobytes()
+    quiet = np.zeros(1024, dtype=np.int16).tobytes()
+    w._q.put_nowait((time.monotonic() - K.MAX_AUDIO_DELAY - 1, loud))
+    assert w.start()
+    try:
+        w.feed(quiet)
+        assert consumed.wait(1)
+        assert not triggered.is_set()
+        w.feed(loud)
+        assert triggered.wait(1)
+    finally:
+        w.stop()

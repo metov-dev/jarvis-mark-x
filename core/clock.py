@@ -15,14 +15,19 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import threading
 import time
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
+from functools import wraps
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
+
+from core.storage import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -84,26 +89,31 @@ def parse_duration(p: dict) -> float | None:
         v = p.get(key)
         if v not in (None, ""):
             try:
-                total += float(v) * k
-                seen = True
+                amount = float(v)
             except (TypeError, ValueError):
-                pass
+                return None
+            if isinstance(v, bool) or not math.isfinite(amount) or amount < 0:
+                return None
+            total += amount * k
+            seen = True
     if seen:
-        return total if total > 0 else None
+        return total if math.isfinite(total) and total > 0 else None
     text = str(p.get("duration") or "").lower().replace(",", ".")
-    if not text:
+    if not text or re.search(r"[-−–]\s*\d|\bминус\b", text):
         return None
     if "полчаса" in text:
         return 1800.0
     m = re.fullmatch(r"\s*(\d+):(\d{2})(?::(\d{2}))?\s*", text)
     if m:                                        # «1:30» — минуты:секунды, «1:30:00» — часы
         a, b, c = int(m[1]), int(m[2]), m[3]
-        return float(a * 3600 + b * 60 + int(c)) if c else float(a * 60 + b)
+        if b >= 60 or (c is not None and int(c) >= 60):
+            return None
+        return float(a * 3600 + b * 60 + int(c) if c else a * 60 + b) or None
     total = 0.0
     for num, unit in re.findall(r"(\d+(?:\.\d+)?|[а-я]+)?\s*(час|мин|сек)", text):
         n = float(num) if num and num[0].isdigit() else _WORD_NUM.get(num, 1.0)
         total += n * {"час": 3600, "мин": 60, "сек": 1}[unit]
-    return total or None
+    return total if math.isfinite(total) and total > 0 else None
 
 
 def parse_hhmm(text: str) -> tuple[int, int]:
@@ -149,10 +159,36 @@ class Stopwatch:
     laps: list = field(default_factory=list)
 
     def value(self, now: float) -> float:
-        return self.elapsed + (now - self.started if self.started else 0.0)
+        return self.elapsed + (max(0.0, now - self.started) if self.started else 0.0)
 
 
 # ── часы ──────────────────────────────────────────────────────────────────────
+
+class _ClockSaveError(OSError):
+    pass
+
+
+SAVE_FAILED = "Не удалось сохранить изменения в часах, сэр."
+
+
+def _persist_action(method):
+    @wraps(method)
+    def run(self, *args, **kwargs):
+        with self._lock:
+            ringing = self._ringing
+            previous = deepcopy((self.timers, self.alarms, self.stopwatch, self._next_id, ringing))
+            try:
+                return method(self, *args, **kwargs)
+            except _ClockSaveError as exc:
+                self.timers, self.alarms, self.stopwatch, self._next_id, previous_ring = previous
+                if ringing and previous_ring:
+                    vars(ringing).update(vars(previous_ring))
+                    self.alarms = [ringing if alarm is previous_ring else alarm for alarm in self.alarms]
+                self._ringing = ringing
+                logger.warning("clock.json не сохранён: %s", exc)
+                return SAVE_FAILED
+    return run
+
 
 class Clock:
     def __init__(self, path: str | Path | None = None, now: Callable[[], float] = time.time,
@@ -162,12 +198,15 @@ class Clock:
         self.local = local or (lambda: datetime.fromtimestamp(self.now()))
         self.say: Callable[[str], None] = lambda text: None
         self.notify: Callable[[str, str], None] = lambda title, text: None
+        self.on_tick: Callable[[], None] | None = None
+        self._stopwatch_saved_at = 0.0
         self.sound = Sound()
         self._lock = threading.RLock()
         self.timers: list[Timer] = []
         self.alarms: list[Alarm] = []
         self.stopwatch = Stopwatch()
         self._next_id = 1
+        self._retry_save_at: float | None = None
         self._ringing: Alarm | None = None
         self._ring_started = 0.0
         self._ring_spoken = 0.0
@@ -181,25 +220,41 @@ class Clock:
             return
         try:
             d = json.loads(self.path.read_text(encoding="utf-8"))
-            self.timers = [Timer(**t) for t in d.get("timers", [])]
-            self.alarms = [Alarm(**a) for a in d.get("alarms", [])]
-            self.stopwatch = Stopwatch(**d.get("stopwatch", {}))
-            self._next_id = int(d.get("next_id", 1))
+            timers = [Timer(**t) for t in d.get("timers", [])]
+            alarms = [Alarm(**a) for a in d.get("alarms", [])]
+            stopwatch = Stopwatch(**d.get("stopwatch", {}))
+            if stopwatch.started:
+                # Старый формат не содержит времени последней записи секундомера.
+                stopwatch.elapsed = max([stopwatch.elapsed, *stopwatch.laps])
+                stopwatch.started = 0.0
+            latest_id = max((record.id for record in [*timers, *alarms]), default=0)
+            self._next_id = max(int(d.get("next_id", 1)), latest_id + 1)
+            self.timers, self.alarms, self.stopwatch = timers, alarms, stopwatch
         except Exception as exc:
             logger.warning("clock.json не читается: %s", exc)
 
     def _save(self):
         if not self.path:
             return
+        saved_at = self.now()
+        stopwatch = asdict(self.stopwatch)
+        stopwatch.update(started=0.0, elapsed=self.stopwatch.value(saved_at))
         data = {"timers": [asdict(t) for t in self.timers], "alarms": [asdict(a) for a in self.alarms],
-                "stopwatch": asdict(self.stopwatch), "next_id": self._next_id}
+                "stopwatch": stopwatch, "next_id": self._next_id}
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-            os.replace(tmp, self.path)
-        except Exception as exc:
-            logger.warning("clock.json не сохранён: %s", exc)
+            atomic_write_json(self.path, data)
+        except OSError as exc:
+            raise _ClockSaveError(str(exc)) from exc
+        self._retry_save_at = None
+        self._stopwatch_saved_at = saved_at
+
+    def _save_after_tick(self):
+        # Уже сработавший таймер не должен повторяться каждые полсекунды при сбое записи.
+        try:
+            self._save()
+        except _ClockSaveError as exc:
+            self._retry_save_at = time.monotonic() + 5
+            logger.warning("Не удалось сохранить срабатывание часов: %s", exc)
 
     def _id(self) -> int:
         self._next_id += 1
@@ -212,23 +267,32 @@ class Clock:
                 f"{d.year} года.")
 
     # ── таймеры ───────────────────────────────────────────────────────────────
-    def _find_timers(self, which: str) -> list[Timer]:
-        w = (which or "").strip().lower()
-        if w in ("все", "всё", "all"):
-            return list(self.timers)
-        if w:
-            hit = [t for t in self.timers if w in t.label.lower() or w == str(t.id)]
-            if hit:
-                return hit
-        return self.timers[-1:]                 # без уточнения — последний поставленный
+    def _find_timers(self, which: str, allow_all: bool = True) -> tuple[list[Timer], str]:
+        w = (which or "").strip().casefold()
+        if not self.timers:
+            return [], "Таймеров нет."
+        if not w:
+            return self.timers[-1:], ""
+        if allow_all and w in ("все", "всё", "all"):
+            return list(self.timers), ""
+        number = re.fullmatch(r"(?:номер\s+|#)?(\d+)", w)
+        by_id = [t for t in self.timers if number and number[1] == str(t.id)]
+        exact = [t for t in self.timers if w == t.label.casefold()]
+        matches = by_id or exact or [t for t in self.timers if w in t.label.casefold()]
+        if len(matches) > 1:
+            options = ", ".join(f"«{t.label}», номер {t.id}" for t in matches)
+            return [], f"Уточните таймер: {options}."
+        if not matches:
+            return [], f"Таймер «{which}» не найден."
+        return matches, ""
 
+    @_persist_action
     def timer_set(self, seconds: float | None, label: str = "") -> str:
-        if not seconds or seconds <= 0:
-            return "На сколько поставить таймер, сэр?"
-        with self._lock:
-            t = Timer(self._id(), (label or "").strip(), float(seconds), self.now() + float(seconds))
-            self.timers.append(t)
-            self._save()
+        if not seconds or not math.isfinite(seconds) or seconds <= 0:
+            return "Укажите длительность таймера, сэр."
+        t = Timer(self._id(), (label or "").strip(), float(seconds), self.now() + float(seconds))
+        self.timers.append(t)
+        self._save()
         return f"Таймер{(' «' + t.label + '»') if t.label else ''} на {say_seconds(seconds)} запущен."
 
     def timer_left(self, t: Timer) -> float:
@@ -245,80 +309,106 @@ class Clock:
                 parts.append(f"{name} — осталось {say_seconds(self.timer_left(t))}{state}")
         return "Таймеры: " + "; ".join(parts) + "."
 
+    @_persist_action
     def timer_cancel(self, which: str = "") -> str:
-        with self._lock:
-            gone = self._find_timers(which)
-            if not gone:
-                return "Таймеров нет."
-            self.timers = [t for t in self.timers if t not in gone]
-            self._save()
+        gone, error = self._find_timers(which)
+        if error:
+            return error
+        self.timers = [t for t in self.timers if t not in gone]
+        self._save()
         return "Все таймеры отменены." if len(gone) > 1 else "Таймер отменён."
 
+    @_persist_action
+    def timer_modify(self, seconds: float | None, which: str = "") -> str:
+        if not seconds or not math.isfinite(seconds) or seconds <= 0:
+            return "Укажите новую длительность таймера, сэр."
+        timers, error = self._find_timers(which, allow_all=False)
+        if error:
+            return error
+        t = timers[0]
+        t.total, t.end, t.left = seconds, self.now() + seconds, 0.0
+        self._save()
+        return f"Таймер переставлен на {say_seconds(seconds)}."
+
+    @_persist_action
     def timer_add(self, seconds: float | None, which: str = "") -> str:
-        with self._lock:
-            ts = self._find_timers(which)
-            if not ts or not seconds:
-                return "Какой таймер продлить и на сколько, сэр?"
-            t = ts[0]
-            if t.end:
-                t.end += seconds
-            else:
-                t.left += seconds
-            t.total += seconds
-            self._save()
-            return f"Добавил {say_seconds(seconds)}. Осталось {say_seconds(self.timer_left(t))}."
+        ts, error = self._find_timers(which, allow_all=False)
+        if error:
+            return error
+        if not seconds or not math.isfinite(seconds) or seconds <= 0:
+            return "Укажите, на сколько продлить таймер, сэр."
+        t = ts[0]
+        if t.end:
+            t.end += seconds
+        else:
+            t.left += seconds
+        t.total += seconds
+        self._save()
+        return f"Добавил {say_seconds(seconds)}. Осталось {say_seconds(self.timer_left(t))}."
 
+    @_persist_action
     def timer_pause(self, which: str = "") -> str:
-        with self._lock:
-            ts = [t for t in self._find_timers(which) if t.end]
-            for t in ts:
-                t.left, t.end = max(0.0, t.end - self.now()), 0.0
-            self._save()
-        return "Таймер на паузе." if ts else "Нечего ставить на паузу."
+        ts, error = self._find_timers(which)
+        if error:
+            return error
+        ts = [t for t in ts if t.end]
+        if not ts:
+            return "Нечего ставить на паузу."
+        now = self.now()
+        for t in ts:
+            t.left, t.end = max(0.0, t.end - now), 0.0
+        self._save()
+        return "Таймер на паузе."
 
+    @_persist_action
     def timer_resume(self, which: str = "") -> str:
-        with self._lock:
-            ts = [t for t in self._find_timers(which) if not t.end]
-            for t in ts:
-                t.end, t.left = self.now() + t.left, 0.0
-            self._save()
-        return "Таймер продолжен." if ts else "Нечего продолжать."
+        ts, error = self._find_timers(which)
+        if error:
+            return error
+        ts = [t for t in ts if not t.end]
+        if not ts:
+            return "Нечего продолжать."
+        now = self.now()
+        for t in ts:
+            t.end, t.left = now + t.left, 0.0
+        self._save()
+        return "Таймер продолжен."
 
     # ── секундомер ────────────────────────────────────────────────────────────
+    @_persist_action
     def sw_start(self) -> str:
-        with self._lock:
-            sw = self.stopwatch
-            if sw.started:
-                return f"Секундомер уже идёт: {say_seconds(sw.value(self.now()))}."
-            sw.started = self.now()
-            self._save()
-            return "Секундомер пошёл." if not sw.elapsed else "Секундомер продолжен."
+        sw = self.stopwatch
+        if sw.started:
+            return f"Секундомер уже идёт: {say_seconds(sw.value(self.now()))}."
+        sw.started = self.now()
+        self._save()
+        return "Секундомер пошёл." if not sw.elapsed else "Секундомер продолжен."
 
+    @_persist_action
     def sw_stop(self) -> str:
-        with self._lock:
-            sw = self.stopwatch
-            if not sw.started:
-                return "Секундомер не запущен." if not sw.elapsed else \
-                    f"Секундомер уже стоит: {say_seconds(sw.elapsed)}."
-            sw.elapsed, sw.started = sw.value(self.now()), 0.0
-            self._save()
-            return f"Стоп. {say_seconds(sw.elapsed)}."
+        sw = self.stopwatch
+        if not sw.started:
+            return "Секундомер не запущен." if not sw.elapsed else \
+                f"Секундомер уже стоит: {say_seconds(sw.elapsed)}."
+        sw.elapsed, sw.started = sw.value(self.now()), 0.0
+        self._save()
+        return f"Стоп. {say_seconds(sw.elapsed)}."
 
+    @_persist_action
     def sw_lap(self) -> str:
-        with self._lock:
-            sw = self.stopwatch
-            if not sw.started:
-                return "Секундомер не запущен."
-            v = sw.value(self.now())
-            sw.laps.append(v)
-            self._save()
-            prev = sw.laps[-2] if len(sw.laps) > 1 else 0.0
-            return f"Круг {len(sw.laps)}: {say_seconds(v - prev)} (всего {say_seconds(v)})."
+        sw = self.stopwatch
+        if not sw.started:
+            return "Секундомер не запущен."
+        v = sw.value(self.now())
+        sw.laps.append(v)
+        self._save()
+        prev = sw.laps[-2] if len(sw.laps) > 1 else 0.0
+        return f"Круг {len(sw.laps)}: {say_seconds(v - prev)} (всего {say_seconds(v)})."
 
+    @_persist_action
     def sw_reset(self) -> str:
-        with self._lock:
-            self.stopwatch = Stopwatch()
-            self._save()
+        self.stopwatch = Stopwatch()
+        self._save()
         return "Секундомер сброшен."
 
     def sw_status(self) -> str:
@@ -349,6 +439,7 @@ class Clock:
                 return d
         return None
 
+    @_persist_action
     def alarm_set(self, when: str, label: str = "", repeat: str = "once") -> str:
         try:
             h, m = parse_hhmm(when)
@@ -356,13 +447,12 @@ class Clock:
             return f"Сэр, {exc}."
         repeat = repeat if repeat in REPEATS else "once"
         now = self.local()
-        with self._lock:
-            a = Alarm(self._id(), f"{h:02d}:{m:02d}", (label or "").strip(), repeat)
-            if repeat == "once":
-                day = now.date() if (h, m) > (now.hour, now.minute) else now.date() + timedelta(days=1)
-                a.date = day.isoformat()
-            self.alarms.append(a)
-            self._save()
+        a = Alarm(self._id(), f"{h:02d}:{m:02d}", (label or "").strip(), repeat)
+        if repeat == "once":
+            day = now.date() if (h, m) > (now.hour, now.minute) else now.date() + timedelta(days=1)
+            a.date = day.isoformat()
+        self.alarms.append(a)
+        self._save()
         at = self.next_ring(a, now)
         when_txt = "сегодня" if at and at.date() == now.date() else \
             "завтра" if at and at.date() == now.date() + timedelta(days=1) else \
@@ -380,51 +470,67 @@ class Clock:
                      for a in sorted(self.alarms, key=lambda a: a.time)]
         return "Будильники: " + "; ".join(p.replace(" один раз", "") for p in parts) + "."
 
+    @_persist_action
     def alarm_cancel(self, which: str = "") -> str:
         w = (which or "").strip().lower()
-        with self._lock:
-            if w in ("все", "всё", "all"):
-                gone = list(self.alarms)
-            elif w:
-                try:
-                    h, m = parse_hhmm(w)
-                    key = f"{h:02d}:{m:02d}"
-                except ValueError:
-                    key = None
-                gone = [a for a in self.alarms if a.time == key or (w and w in a.label.lower())]
+        if w in ("все", "всё", "all"):
+            gone = list(self.alarms)
+        elif w:
+            try:
+                h, m = parse_hhmm(w)
+                key = f"{h:02d}:{m:02d}"
+            except ValueError:
+                key = None
+            number = re.fullmatch(r"(?:номер\s+|#)(\d+)", w)
+            if number:
+                gone = [a for a in self.alarms if number[1] == str(a.id)]
             else:
-                gone = self.alarms[-1:]
-            if not gone:
-                return "Такого будильника нет."
-            self.alarms = [a for a in self.alarms if a not in gone]
-            if self._ringing in gone:
-                self._stop_ringing()
-            self._save()
+                exact = [a for a in self.alarms if a.time == key or a.label.casefold() == w]
+                gone = exact or [a for a in self.alarms if w in a.label.casefold()]
+            if len(gone) > 1:
+                options = ", ".join(f"{a.time} «{a.label}» (номер {a.id})" for a in gone)
+                return f"Уточните, какой будильник удалить: {options}."
+        else:
+            gone = self.alarms[-1:]
+        if not gone:
+            return "Такого будильника нет."
+        self.alarms = [a for a in self.alarms if a not in gone]
+        was_ringing = self._ringing in gone
+        self._save()
+        if was_ringing:
+            self._stop_ringing()
         return "Все будильники удалены." if len(gone) > 1 else f"Будильник на {gone[0].time} удалён."
 
+    @_persist_action
     def alarm_stop(self) -> str:
-        with self._lock:
-            if not self._ringing:
-                return "Будильник не звенит."
-            self._stop_ringing()
-            self._save()
+        if not self._ringing:
+            return "Будильник не звенит."
+        self._clear_ringing()
+        self._save()
+        self.sound.stop()
         return "Будильник выключен. Доброе утро, сэр."
 
+    @_persist_action
     def alarm_snooze(self, minutes: float = 5) -> str:
         minutes = float(minutes or 5)
-        with self._lock:
-            a = self._ringing
-            if not a:
-                return "Будильник не звенит."
-            self._stop_ringing(done=False)
-            a.snooze_until = self.now() + minutes * 60
-            self._save()
+        if not math.isfinite(minutes) or minutes <= 0:
+            return "Укажите, на сколько отложить будильник, сэр."
+        a = self._ringing
+        if not a:
+            return "Будильник не звенит."
+        self._clear_ringing(done=False)
+        a.snooze_until = self.now() + minutes * 60
+        self._save()
+        self.sound.stop()
         return f"Хорошо, разбужу ещё раз через {say_seconds(minutes * 60)}."
 
-    def _stop_ringing(self, done: bool = True):
+    def _stop_ringing(self):
+        self._clear_ringing()
+        self.sound.stop()
+
+    def _clear_ringing(self, done: bool = True):
         a = self._ringing
         self._ringing = None
-        self.sound.stop()
         if a and done:
             a.snooze_until = 0.0
             if a.repeat == "once":
@@ -436,7 +542,8 @@ class Clock:
         with self._lock:
             if self._ringing:
                 return f"Будильник {self._ringing.time}", 0.0
-            running = [t for t in self.timers if t.end]
+            now = self.now()
+            running = [t for t in self.timers if t.end and t.end > now]
             if running:
                 t = min(running, key=lambda t: t.end)
                 return (t.label or "Таймер"), t.end
@@ -451,24 +558,42 @@ class Clock:
     def tick(self):
         now, local = self.now(), self.local()
         fired: list[Timer] = []
+        missed: list[Alarm] = []
         with self._lock:
             for t in list(self.timers):
                 if t.end and t.end <= now:
                     self.timers.remove(t)
                     fired.append(t)
             ring: Alarm | None = None
-            if not self._ringing:
-                for a in self.alarms:
-                    at = self.next_ring(a, local)
-                    if at and at <= local and (local - at).total_seconds() < 120:
-                        ring = a
-                        break
+            for alarm in list(self.alarms):
+                if alarm is self._ringing:
+                    continue
+                at = self.next_ring(alarm, local)
+                delay = (local - at).total_seconds() if at else None
+                if (alarm.repeat == "once" and at is None and alarm.last) or (
+                    delay is not None and delay >= 120 and (alarm.repeat == "once" or alarm.snooze_until)
+                ):
+                    missed.append(alarm)
+                    if alarm.repeat == "once":
+                        self.alarms.remove(alarm)
+                    else:
+                        alarm.snooze_until = 0.0
+                elif not self._ringing and ring is None and delay is not None and 0 <= delay < 120:
+                    ring = alarm
             if ring:
                 ring.last = local.date().isoformat()
                 ring.snooze_until = 0.0
                 self._ringing, self._ring_started, self._ring_spoken = ring, now, 0.0
-            if fired or ring:
-                self._save()
+            retry = self._retry_save_at
+            checkpoint = self.path and self.stopwatch.started and now - self._stopwatch_saved_at >= 10
+            if fired or missed or ring or (retry is not None and time.monotonic() >= retry) or (
+                checkpoint and retry is None
+            ):
+                self._save_after_tick()
+        for alarm in missed:
+            suffix = f" — {alarm.label}" if alarm.label else ""
+            logger.info("Пропущен будильник %s%s", alarm.time, suffix)
+            self.notify("ПРОПУЩЕН БУДИЛЬНИК", alarm.time + suffix)
         for t in fired:
             self._timer_fired(t)
         if ring:
@@ -494,7 +619,7 @@ class Clock:
             logger.info("Будильник %s: никто не выключил — перестаю звенеть", a.time)
             with self._lock:
                 self._stop_ringing()
-                self._save()
+                self._save_after_tick()
             return
         # Позвенел — Джарвис говорит сам (звук на это время стихает), и так
         # раз в минуту, пока будильник не выключат или не отложат.
@@ -506,7 +631,14 @@ class Clock:
                      "Разбуди пользователя одной-двумя бодрыми фразами и предложи отложить на 5 минут. "
                      "Скажет «отложи» — вызови clock с action=\"alarm_snooze\", «выключи»/«встаю» — "
                      "action=\"alarm_stop\". Сам будильник не выключай.]")
-            threading.Timer(12.0, lambda: self._ringing is a and self.sound.play("alarm", loop=True)).start()
+            def resume_sound():
+                with self._lock:
+                    if self._ringing is a:
+                        self.sound.play("alarm", loop=True)
+
+            reminder = threading.Timer(12.0, resume_sound)
+            reminder.daemon = True
+            reminder.start()
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -519,11 +651,19 @@ class Clock:
                     self.tick()
                 except Exception as exc:
                     logger.warning("Часы: %s", exc)
+                if self.on_tick:
+                    try:
+                        self.on_tick()
+                    except Exception as exc:
+                        logger.warning("Напоминания: %s", exc)
         self._thread = threading.Thread(target=run, daemon=True, name="clock")
         self._thread.start()
 
     def stop(self):
         self._stop.set()
+        with self._lock:
+            if self.stopwatch.started:
+                self.sw_stop()
         self._thread = None
 
 
@@ -607,11 +747,7 @@ def clock_tool(p: dict) -> str:
     if a == "timer_cancel":
         return c.timer_cancel(which)
     if a == "timer_modify":
-        sec = parse_duration(p)
-        if not sec:
-            return "На сколько переставить таймер, сэр?"
-        c.timer_cancel(which)
-        return c.timer_set(sec, str(p.get("label") or ""))
+        return c.timer_modify(parse_duration(p), which)
     if a == "timer_add":
         return c.timer_add(parse_duration(p), which)
     if a == "timer_pause":

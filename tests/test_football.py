@@ -227,7 +227,7 @@ def test_watch_match_not_found_hints_login():
     assert "Какой матч" in F.watch_match("", tab=tab)
 
 
-def test_browser_prefers_chrome_and_yandex(monkeypatch):
+def test_browser_prefers_yandex_then_chrome(monkeypatch):
     from actions import browser_control
     from core import browser_cdp as cdp
     have = {"edge": "msedge.exe", "yandex": "browser.exe"}
@@ -236,6 +236,11 @@ def test_browser_prefers_chrome_and_yandex(monkeypatch):
     monkeypatch.setattr(browser_control, "_browser_exe", lambda name: have.get(name))
     assert cdp.browser_exe() == "browser.exe"
     have["chrome"] = "chrome.exe"
+    assert cdp.browser_exe() == "browser.exe"
+    del have["yandex"]
+    monkeypatch.setattr(cdp, "_windows_default_browser", lambda: "default.exe")
+    assert cdp.browser_exe() == "default.exe"
+    monkeypatch.setattr(cdp, "_windows_default_browser", lambda: None)
     assert cdp.browser_exe() == "chrome.exe"
 
 

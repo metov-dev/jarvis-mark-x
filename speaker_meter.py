@@ -16,10 +16,17 @@
 колбэк обязан возвращаться за миллисекунды.
 """
 import logging
+import math
+import os
+from pathlib import Path
+import subprocess
+import sys
 import threading
+import time
 
 logger = logging.getLogger("jarvis-speaker")
 
+_MAX_SAMPLE_AGE_SEC = 1.5
 _POLL_SEC = 0.05          # 50 мс — быстрее, чем длится один кадр микрофона
 _DEVICE_CHECK_SEC = 2.0   # как часто сверяться с устройством вывода по умолчанию
 
@@ -29,6 +36,7 @@ class SpeakerMeter:
 
     def __init__(self, poll_sec: float = _POLL_SEC):
         self._peak = 0.0
+        self._last_sample_at = None
         self._recent = [0.0, 0.0, 0.0]   # последние замеры: кадр микрофона длиннее одного
         self._poll = poll_sec
         self._stop = threading.Event()
@@ -128,6 +136,7 @@ class SpeakerMeter:
                         logger.debug("Переключение измерителя: %s", exc)
             try:
                 self._peak = float(meter.GetPeakValue())
+                self._last_sample_at = _time.monotonic()
                 self._recent = self._recent[1:] + [self._peak]
                 misses = 0
             except Exception as exc:
@@ -148,3 +157,117 @@ class SpeakerMeter:
                 comtypes.CoUninitialize()
         except Exception:
             pass
+
+class IsolatedSpeakerMeter:
+    """Reads the Windows output meter without loading its COM objects in the UI process."""
+
+    def __init__(self):
+        self._samples = ((0.0, 0.0, 0.0), float("-inf"))
+        self._ready = threading.Event()
+        self._lock = threading.Lock()
+        self._process = None
+        self._stopped = False
+
+    @property
+    def available(self) -> bool:
+        return not self._stopped and time.monotonic() - self._samples[1] < _MAX_SAMPLE_AGE_SEC
+
+    @property
+    def recent(self) -> float:
+        values, sampled_at = self._samples
+        if self._stopped or time.monotonic() - sampled_at >= _MAX_SAMPLE_AGE_SEC:
+            return 0.0
+        return max(values)
+
+    def start(self, timeout=8.0):
+        args = [sys.executable]
+        if not getattr(sys, "frozen", False):
+            args.append(str(Path(__file__).resolve()))
+        args.append("--speaker-meter-stream")
+        with self._lock:
+            if self._stopped:
+                return False
+            try:
+                self._process = subprocess.Popen(
+                    args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except OSError as exc:
+                logger.warning("Не удалось запустить измеритель колонок: %s", exc)
+                return False
+            threading.Thread(target=self._read, args=(self._process,), daemon=True,
+                             name="speaker-meter-reader").start()
+        self._ready.wait(timeout)
+        if not self.available:
+            self.stop()
+            return False
+        return True
+
+    def _read(self, process):
+        try:
+            with process.stdout as stream:
+                for line in stream:
+                    try:
+                        value = float(line)
+                    except ValueError:
+                        continue
+                    if not math.isfinite(value) or not 0 <= value <= 1:
+                        continue
+                    values, _ = self._samples
+                    self._samples = ((*values[-2:], value), time.monotonic())
+                    self._ready.set()
+        except OSError as exc:
+            logger.debug("Поток измерителя колонок закрыт: %s", exc)
+        finally:
+            self._samples = ((0.0, 0.0, 0.0), float("-inf"))
+            self._ready.set()
+
+    def stop(self):
+        with self._lock:
+            self._stopped = True
+            self._ready.set()
+            process = self._process
+            if process is not None and process.poll() is None:
+                try:
+                    process.terminate()
+                except OSError:
+                    pass
+
+
+def stream_worker():
+    stream = sys.stdout.buffer if sys.stdout is not None else None
+    if stream is None and sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+        import msvcrt
+        get_handle = ctypes.windll.kernel32.GetStdHandle
+        get_handle.argtypes = (wintypes.DWORD,)
+        get_handle.restype = wintypes.HANDLE
+        handle = get_handle(-11 & 0xffffffff)
+        if not handle or handle == ctypes.c_void_p(-1).value:
+            return 1
+        stream = os.fdopen(msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY), "wb")
+    if stream is None:
+        return 1
+    meter = SpeakerMeter()
+    if not meter.start():
+        return 1
+    started = time.monotonic()
+    try:
+        while meter.available:
+            sampled_at = meter._last_sample_at
+            if time.monotonic() - (sampled_at if sampled_at is not None else started) >= _MAX_SAMPLE_AGE_SEC:
+                return 1
+            if sampled_at is not None:
+                stream.write(f"{meter.peak:.6f}\n".encode("ascii"))
+                stream.flush()
+            time.sleep(_POLL_SEC)
+    except OSError:
+        pass
+    finally:
+        meter.stop()
+    return 0
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["--speaker-meter-stream"]:
+    raise SystemExit(stream_worker())

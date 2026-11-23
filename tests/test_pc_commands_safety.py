@@ -59,3 +59,28 @@ async def test_call_me_reports_why_not(monkeypatch):
     monkeypatch.setattr(tg_call, "call_in_background", lambda *a, **k: pytest.fail("не должен звонить"))
     res = await pc_server._execute("позвони мне")
     assert res["ok"] is False and "не подключён" in res["text"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", [
+    "Поставь сериал менталист 3 сезон 5ая серия",
+    "Поставь сериал менталист 3сезон и 5ая серия в киного",
+])
+async def test_pc_routes_exact_series_request_before_music(monkeypatch, text):
+    import sys
+    from types import SimpleNamespace
+    from telegram_bot import pc_macros
+
+    monkeypatch.setattr(pc_macros, "match_text", lambda _: None)
+
+    def play(params, *, launch):
+        assert params == {"action": "play", "provider": "kinogo", "season": 3,
+                          "episode": 5, "title": "менталист"}
+        launch.outcome = "success"
+        return "Запущен сезон 3, серия 5."
+
+    monkeypatch.setitem(sys.modules, "actions.movie_player", SimpleNamespace(movie_player=play))
+    monkeypatch.setitem(sys.modules, "actions.music_player", SimpleNamespace(
+        music_player=lambda *a, **k: pytest.fail("Сериал отправили в поиск музыки")))
+    result = await pc_server._execute(text)
+    assert result["ok"] and "сезон 3, серия 5" in result["text"]

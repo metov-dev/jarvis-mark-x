@@ -434,6 +434,17 @@ def _purge(path: Path, field: str, query: str) -> int:
         return len(rows) - len(keep)
 
 
+def forget_question(query: str) -> str:
+    from memory.memory_manager import facts_to_forget
+    from memory.shared import configured
+
+    facts = facts_to_forget(query)
+    names = ", ".join(f"«{key}»" for _, key, _ in facts)
+    scope = f" Совпавшие факты: {names}." if names else " Сохранённых фактов с таким запросом нет."
+    sync = " В общей памяти также будет выполнен поиск по этому запросу." if configured() else ""
+    return f"Удалить из памяти и истории записи по запросу «{query}»?{scope}{sync}"
+
+
 def forget_about(query: str) -> str:
     from memory.memory_manager import forget_matching
     gone = forget_matching(query)

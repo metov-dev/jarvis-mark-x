@@ -157,6 +157,19 @@ _SYSTEM_PROMPT = """Ты — ДЖАРВИС из фильмов о Железн�
 Ты его Джарвис. Точен, живой в разговоре и всегда на его стороне."""
 
 _MAX_HISTORY = 40  # messages per user
+_TRANSCRIBE_INSTRUCTION = (
+    "Распознай речь в аудио. Верни только услышанные слова, без кавычек, пояснений и перевода. "
+    "Если разборчивой речи нет, верни пустую строку."
+)
+
+
+def is_transcription_instruction(text: str) -> bool:
+    normalized = " ".join(text.casefold().split()).strip('«»\" ')
+    return normalized.startswith(_TRANSCRIBE_INSTRUCTION.casefold()) or (
+        "распознай речь в этом аудио" in normalized
+        and "только текст того, что было сказано" in normalized
+        and "верни пустую строку" in normalized
+    )
 # Сколько Gemini отдыхает после исчерпанной квоты, если есть запасная модель.
 _GEMINI_REST_SEC = 60.0
 
@@ -443,13 +456,7 @@ class GeminiClient:
         contents = [
             types.Content(
                 role="user",
-                parts=[
-                    types.Part(inline_data=types.Blob(mime_type=mime_type, data=audio_bytes)),
-                    types.Part(text=(
-                        "Распознай речь в этом аудио и верни ТОЛЬКО текст того, что было сказано. "
-                        "Без кавычек, без пояснений, без перевода. Если ничего не разобрать — верни пустую строку."
-                    )),
-                ],
+                parts=[types.Part(inline_data=types.Blob(mime_type=mime_type, data=audio_bytes))],
             )
         ]
         for model in self._models_to_try():
@@ -459,11 +466,14 @@ class GeminiClient:
                     lambda m=model: self._client.models.generate_content(
                         model=m,
                         contents=contents,
-                        config=types.GenerateContentConfig(temperature=0.0, **self._fast(m)),
+                        config=types.GenerateContentConfig(
+                            system_instruction=_TRANSCRIBE_INSTRUCTION, temperature=0.0, **self._fast(m),
+                        ),
                     ),
                 )
                 text = (response.text or "").strip()
-                if text:
+                if text and not is_transcription_instruction(text):
+                    self.last_error = ""
                     # Основную модель не подменяем: один временный сбой раньше
                     # навсегда (до перезапуска) переключал ВСЕ чаты на запасную.
                     return text

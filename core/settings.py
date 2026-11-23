@@ -42,12 +42,15 @@ OPTS = [
     Opt("mic_threshold", "MIC_RMS_THRESHOLD", 150),     # тише — не считается речью
     Opt("ignore_speakers", "MIC_IGNORE_SPEAKERS", True),  # не слушать, пока играет музыка/фильм
     Opt("wake_mode", "JARVIS_WAKE_MODE", "wake_word"),  # wake_word | always_on
+    Opt("wake_charlie", "JARVIS_WAKE_CHARLIE", True, restart=True),
+    Opt("playback_reference", "JARVIS_PLAYBACK_REFERENCE", False, restart=True),
     Opt("awake_sec", "JARVIS_AWAKE_SEC", 30),           # сколько слушать без имени после ответа
     Opt("voice", None, ""),                             # fish | gemini (в api_keys: jarvis_voice)
     Opt("edge_voice", "EDGE_VOICE", "ru-RU-DmitryNeural"),
     Opt("camera", "JARVIS_CAMERA_INDEX", 0),
     Opt("briefing", "JARVIS_BRIEFING", True),
     Opt("island", "JARVIS_ISLAND", True, restart=True),
+    Opt("initiative_observe", "JARVIS_INITIATIVE_OBSERVE", False, restart=True),
     Opt("animations", "JARVIS_ANIMATIONS", True),       # переходы, подсветка, волны (ui_anim)
     Opt("quick_voice", "JARVIS_QUICK_VOICE", False),    # простые команды — голосом, а не звуком
     Opt("clap_intro", "JARVIS_CLAP_INTRO", True),       # два хлопка — интро и «слушаю»

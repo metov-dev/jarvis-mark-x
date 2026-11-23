@@ -263,10 +263,15 @@ def _pick(target: str, player=None):
         wins = win_apps.find_windows(target)
         if not wins:
             return None, f"Окно «{target}» не найдено, сэр."
+        exact = [w for w in wins if w.title.casefold() == target.casefold()]
+        wins = exact or wins
+        if len(wins) > 1:
+            titles = ", ".join(f"«{w.title}»" for w in wins[:5])
+            return None, f"Уточните, какое окно выбрать: {titles}."
         return wins, ""
     fg = win_apps.foreground()
     if not fg:
-        return None, "Впереди нет открытого окна, сэр."
+        return None, "Не вижу открытого окна на переднем плане, сэр."
     return [fg], ""
 
 
@@ -283,7 +288,7 @@ def _activate_window_by_title(title_part: str, player=None) -> str:
         if player:
             player.write_log(f"SYS: ◉ Активировано: {wins[0].title}")
         return f"Переключил на {wins[0].title[:50]}, сэр."
-    return f"Windows не дал вывести «{wins[0].title[:50]}» вперёд, сэр."
+    return f"Не удалось вывести окно «{wins[0].title[:50]}» вперёд, сэр."
 
 
 def _window_op(how: str, target: str, player=None) -> str:
@@ -294,16 +299,18 @@ def _window_op(how: str, target: str, player=None) -> str:
     wins, err = _pick(target)
     if not wins:
         return err
-    for w in wins:
-        if how == "close":
-            win_apps.close(w)
-        else:
-            win_apps.show(w, how)
-    name = target or wins[0].title[:50]
+    window = wins[0]
+    name = window.title[:80]
+    done = win_apps.close(window) if how == "close" else win_apps.show(window, how)
+    if done is None:
+        return f"Отправил запрос на закрытие «{name}». Окно ещё открыто."
+    if not done:
+        action = {"close": "закрыть", "minimize": "свернуть", "maximize": "развернуть"}[how]
+        return f"Не удалось {action} окно «{name}», сэр."
     verb = {"close": "Закрыл", "minimize": "Свернул", "maximize": "Развернул"}[how]
     if player:
         player.write_log(f"SYS: {verb}: {name}")
-    return f"{verb} {name}, сэр." + (f" (окон: {len(wins)})" if len(wins) > 1 else "")
+    return f"{verb} «{name}», сэр."
 
 
 # ─── Публичная точка входа ────────────────────────────────────────────────────
@@ -327,6 +334,8 @@ def window_control(parameters: dict, player=None) -> str:
                else "minimize" if action in ("minimize", "свернуть") else "maximize")
         if _OS == "Windows":
             return _window_op(how, target, player)
+        if target:
+            return "Выбор окна по названию доступен только в Windows, сэр."
         return {"close": _close_window, "minimize": _minimize_window,
                 "maximize": _maximize_window}[how](player)
 

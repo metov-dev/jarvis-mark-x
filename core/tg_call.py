@@ -1353,13 +1353,23 @@ class Schedule:
         """Звонки, чьё время пришло (в пределах 5 минут — если ПК проснулся чуть позже)."""
         now = now or datetime.now()
         out, changed = [], False
+        today = now.date().isoformat()
         for it in list(self.items):
-            h, m = parse_hhmm(it["time"])
-            at = now.replace(hour=h, minute=m, second=0, microsecond=0)
-            today = now.date().isoformat()
-            if it["repeat"] == "once" and it["date"] != today:
+            try:
+                h, m = parse_hhmm(it["time"])
+            except (TypeError, ValueError):
                 continue
-            if it.get("last") == today or not (0 <= (now - at).total_seconds() <= 300):
+            at = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            delay = (now - at).total_seconds()
+            if it["repeat"] == "once":
+                if it["date"] < today or (it["date"] == today and delay > 300):
+                    self.items.remove(it)
+                    changed = True
+                    logger.info("Пропущен звонок по расписанию: %s %s", it["date"], it["time"])
+                    continue
+                if it["date"] != today:
+                    continue
+            if it.get("last") == today or not (0 <= delay <= 300):
                 continue
             it["last"] = today
             out.append(it)

@@ -70,7 +70,7 @@ def _capture(source: str) -> bytes | None:
     from actions import vision
     if source == "screen":
         return vision.capture_screen_jpeg(max_size=1800, quality=85)
-    return vision.capture_active_window_jpeg() or vision.capture_screen_jpeg(max_size=1800, quality=85)
+    return vision.capture_active_window_jpeg()
 
 
 def _ask(jpeg: bytes, focus: str) -> str:
@@ -115,7 +115,8 @@ def remember_screen(p: dict | None = None, *, capture: Callable[[str], bytes | N
     title_now = window()
     jpeg = capture(source)
     if not jpeg:
-        return "Не получилось сделать снимок экрана."
+        from actions.vision import capture_failure
+        return capture_failure(source)
     try:
         d = parse(ask(jpeg, focus))
     except Exception as exc:

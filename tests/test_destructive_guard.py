@@ -39,6 +39,10 @@ def test_file_deletion_needs_confirmation():
         assert g._is_destructive("files", {"action": action}) is True, action
 
 
+def test_forget_memory_needs_confirmation():
+    assert _load()._is_destructive("forget_memory", {"query": "музыка"})
+
+
 def test_harmless_actions_run_without_asking():
     """Блокировка экрана обратима, громкость тем более — спрашивать незачем."""
     g = _load()

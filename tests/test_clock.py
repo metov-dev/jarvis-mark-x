@@ -75,6 +75,14 @@ def test_timer_fires_once_with_label(world):
     assert c.timer_list() == "Таймеров нет."
 
 
+def test_nearest_skips_expired_timer_before_tick(world):
+    c, ft, _, _, _ = world
+    c.timer_set(10, "Сон")
+    c.timer_set(25, "Чай")
+    ft.go(seconds=10)
+    assert c.nearest() == ("Чай", ft.now() + 15)
+
+
 def test_timer_pause_add_cancel(world):
     c, ft, said, *_ = world
     c.timer_set(300)
@@ -242,3 +250,54 @@ def test_notes_append_delete_latest(tmp_path, monkeypatch):
     assert "корзине" in act({"action": "delete", "title": "Список покупок"})
     assert act({"action": "list"}) == "В базе знаний пока нет заметок."
     assert (tmp_path / "vault" / ".trash" / "Список покупок.md").exists()   # можно вернуть
+
+
+def test_clock_failed_writes_leave_existing_schedule_and_stopwatch(world, monkeypatch):
+    c, ft, _, _, path = world
+    c.timer_set(300, "чай")
+    c.alarm_set("07:30", "работа")
+    original = (path / "clock.json").read_bytes()
+
+    def disk_full(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ck, "atomic_write_json", disk_full)
+    assert c.timer_set(60) == ck.SAVE_FAILED
+    assert c.timer_modify(90, "чай") == ck.SAVE_FAILED
+    assert c.timer_pause("чай") == ck.SAVE_FAILED
+    assert c.alarm_cancel("работа") == ck.SAVE_FAILED
+    assert c.alarm_set("08:00") == ck.SAVE_FAILED
+    assert c.sw_start() == ck.SAVE_FAILED
+    assert len(c.timers) == len(c.alarms) == 1
+    assert c.timers[0].end == ft.now() + 300
+    assert c.alarms[0].time == "07:30"
+    assert not c.stopwatch.started
+    assert (path / "clock.json").read_bytes() == original
+
+
+def test_unknown_and_ambiguous_timer_names_cannot_change_other_timers(world, monkeypatch):
+    c, ft, *_ = world
+    c.timer_set(300, "чай зелёный")
+    c.timer_set(480, "чай чёрный")
+    monkeypatch.setattr(ck, "clock", lambda: c)
+
+    assert "не найден" in ck.clock_tool({"action": "timer_cancel", "label": "кофе"})
+    assert "Уточните" in ck.clock_tool({"action": "timer_modify", "label": "чай", "seconds": 90})
+    assert [t.end - ft.now() for t in c.timers] == [300, 480]
+    first_id = c.timers[0].id
+    assert "переставлен" in ck.clock_tool({"action": "timer_modify", "label": str(first_id), "seconds": 90})
+    restored = ck.Clock(c.path, now=ft.now, local=ft.local)
+    assert [(t.id, t.label, t.end - ft.now()) for t in restored.timers] == [
+        (first_id, "чай зелёный", 90),
+        (c.timers[1].id, "чай чёрный", 480),
+    ]
+
+
+def test_ambiguous_alarm_names_require_specific_selection(world):
+    c, *_ = world
+    c.alarm_set("07:30", "спорт утро")
+    c.alarm_set("19:30", "спорт вечер")
+    assert "Уточните" in c.alarm_cancel("спорт")
+    assert len(c.alarms) == 2
+    assert "07:30 удалён" in c.alarm_cancel(f"номер {c.alarms[0].id}")
+    assert len(c.alarms) == 1

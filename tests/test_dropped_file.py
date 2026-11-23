@@ -111,4 +111,10 @@ def test_confirm_label_and_tool_outcome():
     assert m._tool_outcome({"result": "Ошибка: нет сети"}) is False
     assert m._tool_outcome({"result": "Не успело выполниться за 25 секунд."}) is False
     assert m._tool_outcome({"result": "НЕ ВЫПОЛНЕНО — нужно подтверждение. Переспроси"}) is None
-    assert m._tool_outcome(None) is True
+    assert m._tool_outcome(None) is False
+    assert m._tool_outcome({"result": "  "}) is False
+    assert m._tool_outcome({"result": "Не удалось открыть браузер"}) is False
+    assert m._tool_outcome({"result": "Плеер фильма пока недоступен."}) is False
+    assert m._tool_outcome({"result": "Не нашёл программу"}) is False
+    assert m._tool_outcome({"result": "Не вижу окна с фильмом"}) is False
+    assert m._tool_outcome({"result": "Открыл «Системная ошибка»."}) is True

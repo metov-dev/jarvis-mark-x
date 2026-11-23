@@ -484,7 +484,8 @@ async def _reply_pc_result(message, result: dict | None) -> None:
     """
     if result is None:
         await message.reply_text(
-            "❌ ПК не ответил. Убедись, что Джарвис на компьютере запущен, и попробуй ещё раз."
+            ("⚠ Компьютер на связи, но подтверждение команды не пришло. Проверь результат на ПК."
+             if bridge.connected else _PC_OFFLINE)
         )
         return
     text = result.get("text") or "Готово"
@@ -1648,9 +1649,18 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Пересланное — чужие слова. Отвечаем на них, но действовать по ним
     # (писать контактам, командовать ПК) не даём.
     untrusted = getattr(update.effective_message, "forward_origin", None) is not None
-    await update.effective_message.chat.send_action("typing")
-
     try:
+        # Явная ПК-команда не зависит от загрузки облачной памяти.
+        pc_attempted = not untrusted and bool(re.match(
+            r"^\s*(?:(?:включи|поставь|запусти|воспроизведи|открой)\s+(?:фильм|сериал|кино)"
+            r"|(?:отключи|выключи|останови)\s+музыку)\b", text or "", re.I))
+        if pc_attempted and await _run_pc(update.effective_message, text, user_id, quiet_if_unknown=True):
+            return
+
+        try:
+            await update.effective_message.chat.send_action("typing")
+        except Exception as exc:
+            logger.debug("Индикатор набора не показался: %s", exc)
         # 0. Onboarding in progress? Capture the answer first.
         if onboarding.is_active(user_id):
             await memory.ensure_loaded(user_id)
@@ -1689,7 +1699,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # Сюда попадают и обычные фразы: шлюз ищет ключевые слова, а «громкость
         # голоса у неё приятная» их содержит. Если ПК команду не узнал —
         # продолжаем разговором, а не показываем человеку «Не понял команду».
-        if not untrusted and _looks_like_pc_command(text):
+        if not pc_attempted and not untrusted and _looks_like_pc_command(text):
             if await _run_pc(update.effective_message, text, user_id,
                              quiet_if_unknown=True):
                 return

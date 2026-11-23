@@ -55,10 +55,39 @@ KEYWORDS = (
     "▁ж е р ви с @ЖЕРВИС",
     "▁ж а р ве с @ЖАРВЕС",
     "▁ж а р ви з @ЖАРВИЗ",
+    # Русская модель также выдаёт отдельную границу слова перед слогом «жа».
+    "▁ жа р ви с @ЖАРВИС",
+    "▁ жа р ви з @ЖАРВИЗ",
+    "▁ жа р ве с @ЖАРВЕС",
+    "▁же р ви с @ЖЕРВИС",
 )
+def _keyword_lines(model: Path, allow_alias: bool) -> tuple[str, ...]:
+    # Словарь модели хранит токены, а не целые слова. Выбираем разбиения
+    # только для двух явно поддерживаемых обращений.
+    tokens = {line.split()[0] for line in (model / FILES["tokens"]).read_text(
+        encoding="utf-8").splitlines() if line.strip()}
+
+    def split(word: str):
+        if not word:
+            return [()]
+        return [(word[:size], *tail) for size in range(1, len(word) + 1)
+                if word[:size] in tokens for tail in split(word[size:])]
+
+    words = ("джорвис", "джорвиз", "чарли") if allow_alias else ("джорвис", "джорвиз")
+    extra = []
+    for word in words:
+        paths = sorted(split("▁" + word), key=lambda parts: (len(parts), parts))[:4]
+        extra.extend(" ".join(parts) + " @" + word.upper() for parts in paths)
+    return (*KEYWORDS, *extra)
+
+
 THRESHOLD = float(os.getenv("JARVIS_KWS_THRESHOLD", "0.25"))  # ниже — чувствительнее
 SCORE = float(os.getenv("JARVIS_KWS_SCORE", "1.0"))           # выше — слову легче победить
+# На микрофонной записи с четырьмя гипотезами правильный путь отбрасывался.
+# Восемь восстанавливают слово при прежнем пороге вероятности.
+ACTIVE_PATHS = 8
 COOLDOWN_SEC = 1.5
+MAX_AUDIO_DELAY = 0.75
 RATE = 16000
 
 
@@ -124,19 +153,20 @@ def download(dest: Path | None = None, fetch=None) -> Path:
 def create_spotter(model: Path):
     import sherpa_onnx
     kw = model / "keywords-jarvis.txt"
-    kw.write_text("\n".join(KEYWORDS) + "\n", encoding="utf-8")
+    allow_alias = os.getenv("JARVIS_WAKE_CHARLIE", "1") != "0"
+    kw.write_text("\n".join(_keyword_lines(model, allow_alias)) + "\n", encoding="utf-8")
     return sherpa_onnx.KeywordSpotter(
         tokens=str(model / FILES["tokens"]), encoder=str(model / FILES["encoder"]),
         decoder=str(model / FILES["decoder"]), joiner=str(model / FILES["joiner"]),
         num_threads=1, keywords_file=str(kw), keywords_score=SCORE, keywords_threshold=THRESHOLD,
-        max_active_paths=4, provider="cpu")
+        max_active_paths=ACTIVE_PATHS, provider="cpu")
 
 
 class KwsWake:
     def __init__(self, on_wake: Callable[[str], None], spotter_factory: Callable | None = None):
         self._on_wake = on_wake
         self._factory = spotter_factory            # для тестов
-        self._q: queue.Queue[bytes] = queue.Queue(maxsize=200)
+        self._q: queue.Queue[tuple[float, bytes]] = queue.Queue(maxsize=16)
         self._stop = threading.Event()
         self._cooldown_until = 0.0
         self._kws = None
@@ -158,7 +188,8 @@ class KwsWake:
         # ready — до старта потока: упади он сразу, его ready=False не затрётся.
         self.ready = True
         threading.Thread(target=self._run, daemon=True, name="wake-kws").start()
-        logger.info("Слово «Джарвис» слушает sherpa-onnx (порог %.2f, вес %.1f)", THRESHOLD, SCORE)
+        logger.info("Слово «Джарвис» слушает sherpa-onnx (порог %.2f, вес %.1f, гипотез %d)",
+                    THRESHOLD, SCORE, ACTIVE_PATHS)
         return True
 
     def stop(self):
@@ -169,9 +200,9 @@ class KwsWake:
         if not self.ready:
             return
         try:
-            self._q.put_nowait(pcm)
+            self._q.put_nowait((time.monotonic(), pcm))
         except queue.Full:
-            pass                                    # отстаём — старый звук не ждём
+            pass
 
     def _run(self):
         # Поток детектора не должен умирать молча: раньше ошибка тут уходила в
@@ -185,11 +216,17 @@ class KwsWake:
     def _loop(self):
         stream = self._kws.create_stream()
         started, peak, reported = time.monotonic(), 0.0, False
+        previous_frame = None
         while not self._stop.is_set():
             try:
-                pcm = self._q.get(timeout=0.2)
+                captured, pcm = self._q.get(timeout=0.2)
             except queue.Empty:
                 continue
+            if time.monotonic() - captured > MAX_AUDIO_DELAY:
+                continue
+            if previous_frame is not None and captured - previous_frame > 0.25:
+                self._kws.reset_stream(stream)
+            previous_frame = captured
             x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
             if not reported:
                 # Один раз в журнал: доходит ли звук и какой громкости. «Не слышит
@@ -206,12 +243,13 @@ class KwsWake:
                     continue
                 self._kws.reset_stream(stream)
                 now = time.monotonic()
-                if now < self._cooldown_until:
+                if now < self._cooldown_until or now - captured > MAX_AUDIO_DELAY or self._stop.is_set():
                     continue
                 self._cooldown_until = now + COOLDOWN_SEC
                 self.last_heard = str(hit)
                 logger.info("Услышал «Джарвис» (sherpa-onnx: %s)", hit)
                 try:
-                    self._on_wake("джарвис")
+                    self._on_wake(str(hit).casefold() if str(hit) in
+                                  {"ДЖОРВИС", "ДЖОРВИЗ", "ЧАРЛИ"} else "джарвис")
                 except Exception as exc:
                     logger.warning("Обработчик слова: %s", exc)

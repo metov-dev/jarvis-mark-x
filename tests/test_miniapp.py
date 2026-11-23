@@ -396,3 +396,25 @@ async def test_failed_reply_is_not_saved(client, mem, monkeypatch):
         ws.send_json({"type": "text", "text": "Привет", "tts": False})
         assert "Лимит" in _drain(ws, "text")["text"]
     assert await mem.recent_messages(UID, 10) == []               # сбой — не в историю
+
+
+
+@pytest.mark.asyncio
+async def test_voice_does_not_display_or_route_echoed_transcription_instruction(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from telegram_bot import miniapp_server as server
+
+    text = ("Распознай речь в этом аудио и верни ТОЛЬКО текст того, что было сказано. "
+            "Без кавычек, без пояснений, без перевода. Если ничего не разобрать — верни пустую строку.")
+    gemini = SimpleNamespace(transcribe=AsyncMock(return_value=text), last_error="")
+    route = AsyncMock()
+    socket = SimpleNamespace(send_text=AsyncMock())
+    monkeypatch.setattr(server, "_gemini", gemini)
+    monkeypatch.setattr(server, "_handle_text", route)
+
+    await server._handle_voice(socket, 1, b"\0" * 4000)
+
+    route.assert_not_awaited()
+    payload = json.loads(socket.send_text.await_args.args[0])
+    assert payload["type"] == "text" and "Не разобрал" in payload["text"]

@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import re
+from functools import wraps
+from threading import RLock
 
 from core.storage import atomic_write_json, load_json_or_quarantine
 
@@ -27,6 +29,15 @@ def _get_base_dir() -> Path:
 
 BASE_DIR = _get_base_dir()
 CALENDAR_FILE = BASE_DIR / "config" / "calendar.json"
+_calendar_lock = RLock()
+
+
+def _calendar_write(method):
+    @wraps(method)
+    def locked(*args, **kwargs):
+        with _calendar_lock:
+            return method(*args, **kwargs)
+    return locked
 
 
 # ─── Парсинг даты/времени ─────────────────────────────────────────────────────
@@ -173,6 +184,7 @@ def _save_calendar(data: Dict[str, Any]) -> bool:
         return False
 
 
+@_calendar_write
 def add_event(
     title: str,
     datetime_str: str,
@@ -217,8 +229,9 @@ def add_event(
         
         # Сохраняем
         calendar = _load_calendar()
-        calendar["events"].append(event)
-        _save_calendar(calendar)
+        calendar = {**calendar, "events": [*calendar["events"], event]}
+        if not _save_calendar(calendar):
+            return "Не удалось сохранить изменения в календаре, сэр."
         
         # Форматируем для ответа
         date_str = event_time.strftime("%d.%m.%Y")
@@ -298,6 +311,24 @@ def get_events(date_range: str = "today") -> str:
         return f"Ошибка при получении событий: {str(e)}"
 
 
+def _find_event(events: list, query: str) -> tuple[int | None, str]:
+    query = query.strip()
+    if not query:
+        return None, "Уточните название или ID события, сэр."
+
+    ids = [i for i, event in enumerate(events) if query == event["id"]]
+    normalized = query.casefold()
+    exact = [i for i, event in enumerate(events) if event["title"].casefold() == normalized]
+    matches = ids or exact or [i for i, event in enumerate(events) if normalized in event["title"].casefold()]
+    if len(matches) == 1:
+        return matches[0], ""
+    if matches:
+        options = ", ".join(f"«{events[i]['title']}» ({events[i]['id']})" for i in matches)
+        return None, f"Уточните, какое событие изменить, сэр. Совпадения: {options}."
+    return None, f"Событие «{query}» не найдено, сэр."
+
+
+@_calendar_write
 def delete_event(title_or_id: str) -> str:
     """
     Удаляет событие по названию или ID.
@@ -312,23 +343,15 @@ def delete_event(title_or_id: str) -> str:
         calendar = _load_calendar()
         events = calendar.get("events", [])
         
-        # Ищем событие
-        found_index = -1
-        for i, event in enumerate(events):
-            if title_or_id.lower() in event["title"].lower():
-                found_index = i
-                break
-            elif title_or_id == event["id"]:
-                found_index = i
-                break
-        
-        if found_index == -1:
-            return f"Событие '{title_or_id}' не найдено, сэр."
+        found_index, message = _find_event(events, title_or_id)
+        if found_index is None:
+            return message
         
         # Удаляем
-        deleted_event = events.pop(found_index)
-        calendar["events"] = events
-        _save_calendar(calendar)
+        deleted_event = events[found_index]
+        calendar = {**calendar, "events": events[:found_index] + events[found_index + 1:]}
+        if not _save_calendar(calendar):
+            return "Не удалось сохранить изменения в календаре, сэр."
         
         return f"Удалил событие: {deleted_event['title']}, сэр."
     
@@ -336,6 +359,7 @@ def delete_event(title_or_id: str) -> str:
         return f"Ошибка при удалении события: {str(e)}"
 
 
+@_calendar_write
 def update_event(
     title_or_id: str,
     new_datetime: Optional[str] = None,
@@ -356,28 +380,22 @@ def update_event(
         calendar = _load_calendar()
         events = calendar.get("events", [])
         
-        # Ищем событие
-        found_index = -1
-        for i, event in enumerate(events):
-            if title_or_id.lower() in event["title"].lower():
-                found_index = i
-                break
-            elif title_or_id == event["id"]:
-                found_index = i
-                break
+        found_index, message = _find_event(events, title_or_id)
+        if found_index is None:
+            return message
         
-        if found_index == -1:
-            return f"Событие '{title_or_id}' не найдено, сэр."
-        
-        event = events[found_index]
+        if not (new_datetime or new_duration):
+            return "Уточните новое время или длительность события, сэр."
+        event = events[found_index].copy()
         
         # Обновляем время
         if new_datetime:
             new_time = _parse_datetime(new_datetime)
-            if new_time:
-                duration = event.get("duration_minutes", 60)
-                event["start"] = new_time.isoformat()
-                event["end"] = (new_time + timedelta(minutes=duration)).isoformat()
+            if not new_time:
+                return "Не понял новую дату или время события, сэр."
+            duration = event.get("duration_minutes", 60)
+            event["start"] = new_time.isoformat()
+            event["end"] = (new_time + timedelta(minutes=duration)).isoformat()
         
         # Обновляем длительность
         if new_duration:
@@ -387,9 +405,9 @@ def update_event(
             event["duration_minutes"] = duration_minutes
         
         # Сохраняем
-        events[found_index] = event
-        calendar["events"] = events
-        _save_calendar(calendar)
+        calendar = {**calendar, "events": events[:found_index] + [event] + events[found_index + 1:]}
+        if not _save_calendar(calendar):
+            return "Не удалось сохранить изменения в календаре, сэр."
         
         return f"Обновил событие: {event['title']}, сэр."
     
@@ -397,6 +415,7 @@ def update_event(
         return f"Ошибка при обновлении события: {str(e)}"
 
 
+@_calendar_write
 def add_reminder(
     text: str,
     datetime_str: str
@@ -428,8 +447,9 @@ def add_reminder(
         
         # Сохраняем
         calendar = _load_calendar()
-        calendar["reminders"].append(reminder)
-        _save_calendar(calendar)
+        calendar = {**calendar, "reminders": [*calendar["reminders"], reminder]}
+        if not _save_calendar(calendar):
+            return "Не удалось сохранить изменения в календаре, сэр."
         
         # Форматируем для ответа
         date_str = reminder_time.strftime("%d.%m.%Y")
@@ -439,6 +459,33 @@ def add_reminder(
     
     except Exception as e:
         return f"Ошибка при добавлении напоминания: {str(e)}"
+
+
+@_calendar_write
+def take_due_reminders(now: datetime | None = None) -> list[dict]:
+    """Возвращает наступившие напоминания после сохранения отметки о выдаче."""
+    now = now or datetime.now()
+    calendar = _load_calendar()
+    due = []
+    for record in calendar.get("reminders", []):
+        if not isinstance(record, dict) or record.get("completed"):
+            continue
+        try:
+            at = datetime.fromisoformat(record["datetime"])
+            deadline = at.timestamp()
+        except (KeyError, TypeError, ValueError, OSError, OverflowError):
+            continue
+        if deadline <= now.timestamp() and isinstance(record.get("text"), str) and record["text"].strip():
+            due.append((deadline, record))
+    if not due:
+        return []
+    for _, record in due:
+        record["completed"] = True
+    if not _save_calendar(calendar):
+        for _, record in due:
+            record["completed"] = False
+        return []
+    return [record for _, record in sorted(due, key=lambda item: item[0])]
 
 
 def get_upcoming_reminders(minutes_ahead: int = 15) -> List[Dict[str, Any]]:

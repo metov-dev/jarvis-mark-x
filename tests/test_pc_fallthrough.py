@@ -103,3 +103,21 @@ async def test_старый_клиент_без_признака_ведёт_се
     handled = await _run(msg, br, quiet=True)
     assert handled is True
     assert msg.replies
+
+
+
+@pytest.mark.asyncio
+async def test_explicit_series_command_does_not_wait_for_cloud_memory(monkeypatch, msg):
+    from types import SimpleNamespace
+
+    msg.text = "Поставь сериал Менталист 3 сезон 5 серия"
+    update = SimpleNamespace(effective_message=msg, effective_user=SimpleNamespace(id=1))
+    monkeypatch.setattr(bot_mod, "_is_authorized", lambda _: True)
+    monkeypatch.setattr(bot_mod, "bridge", _Bridge({"text": "Запущен сезон 3, серия 5."}))
+
+    async def unavailable(_):
+        pytest.fail("The PC command depended on cloud memory")
+
+    monkeypatch.setattr(bot_mod.memory, "ensure_loaded", unavailable)
+    await bot_mod.handle_text(update, None)
+    assert "сезон 3, серия 5" in msg.replies[0]

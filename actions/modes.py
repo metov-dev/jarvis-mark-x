@@ -262,16 +262,12 @@ def _activate_movie(cfg: dict, preference: str, player=None) -> str:
     if not title:
         return "Что будем смотреть, сэр? Назовите фильм."
 
-    # Проверяем текущий режим - если уже активен с тем же фильмом, возвращаем приветствие
-    current = get_current_mode()
-    if current.get("mode") == "movie" and current.get("preference") == title:
-        return f"'{title}' уже идёт, сэр."
-
-    # Делегируем продвинутому плееру (он также сохраняет kinogo.mu URL)
     from actions.movie_player import movie_player
-    result = movie_player({"action": "play", "title": title}, player=player)
 
-    _save_state("movie", title)
+    # Сохранённый режим переживает закрытие вкладки. Запуск подтверждает плеер.
+    result = movie_player({"action": "play", "title": title}, player=player)
+    if result.startswith("Включил "):
+        _save_state("movie", title)
     return result
 
 

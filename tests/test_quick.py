@@ -8,6 +8,10 @@ from core import quick as q
 
 
 @pytest.mark.parametrize("text,tool,args", [
+    ("Включи фильм Бэтмен начало 2005 на Kinogo", "movie_player",
+     {"action": "play", "provider": "kinogo", "title": "бэтмен начало 2005"}),
+    ("Джарвис, поставь фильм Бэтмен: Начало на Киного", "movie_player",
+     {"action": "play", "provider": "kinogo", "title": "бэтмен: начало"}),
     ("Джарвис, пауза", "video_control", {"action": "pause"}),
     ("поставь на паузу", "video_control", {"action": "pause"}),
     ("продолжи", "video_control", {"action": "resume"}),
@@ -20,7 +24,8 @@ from core import quick as q
     ("звук на максимум", "computer_control", {"action": "volume_set", "value": "на максимум"}),
     ("громкость музыки на 100", "music_player", {"action": "volume_set", "value": "на 100"}),
     ("сделай музыку громче", "music_player", {"action": "volume_up"}),
-    ("громкость фильма 70", "video_control", {"action": "volume_set", "value": "70"}),
+    ("громкость фильма 70", "video_control", {"action": "volume_set", "value": "70", "target": "video"}),
+    ("поставь фильм на паузу", "video_control", {"action": "pause", "target": "video"}),
     ("выключи звук", "computer_control", {"action": "mute"}),
     ("на весь экран", "video_control", {"action": "fullscreen"}),
     ("сверни все окна", "window_control", {"action": "minimize_all"}),
@@ -125,3 +130,17 @@ def test_weather_and_alarm_not_overreach(text):
 def test_weather_reply_is_spoken_not_silent():
     m = q.match("какая погода")
     assert q.silent(m, "Погода, Шымкент: Ясно.") is False
+
+
+def test_offline_match_uses_only_supported_local_commands(monkeypatch):
+    from core import macros
+
+    def no_macros():
+        raise AssertionError("offline mode must not load macros")
+
+    monkeypatch.setattr(macros, "macros", no_macros)
+    assert q.match("Джарвис, громче", offline=True).args["action"] == "volume_up"
+    assert q.match("Джарвис, экран ярче", offline=True).args["action"] == "brightness_up"
+    assert q.match("Джарвис, поставь таймер на пять минут", offline=True).tool == "clock"
+    for phrase in ("выключи компьютер", "скажи погоду", "открой ютуб", "смотри на экран", "включи музыку"):
+        assert q.match(f"Джарвис, {phrase}", offline=True) is None

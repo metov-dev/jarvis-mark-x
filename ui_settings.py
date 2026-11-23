@@ -331,13 +331,23 @@ class SettingsDialog(QDialog):
         self.ignore = self._toggle("ignore_speakers", v["ignore_speakers"])
         self._row(lay, "Не слушать, пока играет звук",
                   "Чтобы голос из фильма или песни не принять за команду.", self.ignore)
+        playback = self._toggle("playback_reference", v["playback_reference"])
+        self._row(lay, "Сверять звук с колонками",
+                  "Пробный режим. Сравнивает микрофон со звуком Windows. Нужен перезапуск.", playback)
 
         lay = self._section("timer", "Когда отвечать")
         self.wake = self._combo(WAKE, v["wake_mode"], "wake_mode", 340)
         self._row(lay, "Отвечать", "По имени надёжнее: Джарвис не ответит телевизору.", self.wake)
+        charlie = self._toggle("wake_charlie", v["wake_charlie"])
+        self._row(lay, "Откликаться на «Чарли»",
+                  "Второе имя Джарвиса. Вступит в силу после перезапуска.", charlie)
         self.awake = self._combo(AWAKE, int(v["awake_sec"]), "awake_sec", 340)
         self._row(lay, "Слушать после ответа", "Столько можно продолжать разговор, не говоря «Джарвис».",
                   self.awake)
+
+        observe = self._toggle("initiative_observe", v["initiative_observe"])
+        self._row(lay, "Проверять уместность подсказок",
+                  "Jarvis отмечает возможные подсказки в журнале без звука. Вступит в силу после перезапуска.", observe)
 
         lay = self._section("speak", "Голос и звук")
         self.voice = self._combo(VOICES, v["voice"], "voice", 340)

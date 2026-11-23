@@ -161,6 +161,7 @@ class BreakReminder:
         self.off_until: str = ""          # дата ISO: выключено по этот день включительно
         self.enabled = True
         self._start: float | None = None   # начало текущей сессии
+        self._activity: Activity | None = None
         self._last_seen: float | None = None
         self._next_at: float | None = None
         self._stop = threading.Event()
@@ -207,8 +208,10 @@ class BreakReminder:
         if not act:
             if self._last_seen is not None and now - self._last_seen > GAP_SEC:
                 self._start = self._last_seen = self._next_at = None
+                self._activity = None
             return None
-        if self._last_seen is None or now - self._last_seen > GAP_SEC:
+        if act != self._activity or self._last_seen is None or now - self._last_seen > GAP_SEC:
+            self._activity = act
             self._start = now
             self._next_at = now + self.first_min * 60
         self._last_seen = now

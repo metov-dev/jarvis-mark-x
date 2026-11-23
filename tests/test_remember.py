@@ -49,7 +49,8 @@ def test_bad_answer_is_honest(tmp_path, answer):
 
 def test_no_screenshot(tmp_path):
     res, asked = _call(tmp_path, jpeg=None)
-    assert res == "Не получилось сделать снимок экрана." and asked == []
+    assert "Не удалось сделать снимок активного окна" in res
+    assert asked == []
 
 
 def test_parse_cleans_up():

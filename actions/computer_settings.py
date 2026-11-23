@@ -67,10 +67,11 @@ def parse_level(value, default: int | None = None) -> int | None:
 def computer_settings(parameters: dict, response=None, player=None) -> str:
     action = (parameters.get("action") or parameters.get("description") or "").lower().strip()
     value = parameters.get("value")
+    display = parameters.get("display")
 
     if action in _ACTIONS:
         what, mode = _ACTIONS[action]
-        return _volume(mode, value, player) if what == "volume" else _brightness(mode, value, player)
+        return _volume(mode, value, player) if what == "volume" else _brightness(mode, value, player, display)
 
     # --- СКРИНШОТ ---
     if any(k in action for k in ["скриншот", "screenshot", "снимок экрана", "захват экрана"]):
@@ -79,10 +80,10 @@ def computer_settings(parameters: dict, response=None, player=None) -> str:
     # --- ЯРКОСТЬ --- (раньше громкости: «сделай экран ярче»)
     if any(k in action for k in ["яркость", "brightness", "ярче", "темнее"]):
         if any(k in action for k in ["уменьш", "down", "убав", "decrease", "темн", "меньше"]):
-            return _brightness("down", value, player)
+            return _brightness("down", value, player, display)
         if any(k in action for k in ["увелич", "up", "добав", "increase", "ярче", "больше"]):
-            return _brightness("up", value, player)
-        return _brightness("set" if parse_level(value) is not None else "up", value, player)
+            return _brightness("up", value, player, display)
+        return _brightness("set" if parse_level(value) is not None else "up", value, player, display)
 
     # --- ГРОМКОСТЬ ---
     if any(k in action for k in ["громкость", "volume", "звук", "громче", "тише"]):
@@ -275,12 +276,15 @@ def get_volume() -> int | None:
     return _com(lambda: round(_endpoint().GetMasterVolumeLevelScalar() * 100))
 
 
-def _brightness(mode: str, value, player) -> str:
+def _brightness(mode: str, value, player, display=None) -> str:
     step = parse_level(value, 10) or 10
     target = parse_level(value)
     try:
         if _OS == "Windows":
-            msg = _brightness_windows(mode, step, target)
+            screen = str(display if display is not None else 1)
+            if not re.fullmatch(r"[1-9]\d{0,2}", screen):
+                return "Назовите номер экрана, начиная с 1."
+            msg = _brightness_windows(mode, step, target, int(screen) - 1)
 
         elif _OS == "Darwin":
             if mode == "up":
@@ -307,40 +311,68 @@ def _brightness(mode: str, value, player) -> str:
         return f"Ошибка яркости: {e}"
 
 
-def _brightness_windows(mode: str, step: int, target: int | None) -> str:
+def _brightness_windows(mode: str, step: int, target: int | None, index: int = 0) -> str:
     """Ноутбук — через WMI, внешний монитор — через DDC/CI. Оба умеет
     screen_brightness_control; раньше был только WMI, и на обычном
     мониторе яркость не менялась никогда."""
     try:
         import screen_brightness_control as sbc
-        levels = sbc.get_brightness()
-        if levels:
-            now = int(levels[0])
-            new = _next_level(mode, now, step, target)
-            sbc.set_brightness(new)
-            return f"Яркость {new}%." if new != now else f"Яркость уже {now}%."
-    except ImportError:
-        pass
-    except Exception as exc:
-        # Монитор без DDC/CI (или он выключен в меню монитора)
-        return ("Этот монитор не даёт менять яркость программно, сэр. "
-                f"Включите DDC/CI в меню монитора. ({exc})")
+        levels = sbc.get_brightness(display=index)
+    except Exception:
+        levels = None
+    if levels:
+        now = int(levels[0])
+        new = _next_level(mode, now, step, target)
+        if new == now:
+            return f"Яркость уже {now}%."
+        try:
+            sbc.set_brightness(new, display=index)
+        except Exception:
+            return f"Не удалось изменить яркость экрана {index + 1}."
+        try:
+            actual = sbc.get_brightness(display=index)
+        except Exception:
+            actual = None
+        return _confirmed_brightness(new, actual[0] if actual else None)
+    if index != 0:
+        return f"Не удалось найти экран {index + 1} с управляемой яркостью."
 
-    read = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-         "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness).CurrentBrightness"],
-        capture_output=True, timeout=10, creationflags=_NO_WINDOW)
-    out = read.stdout.decode("ascii", "ignore").strip().splitlines()
-    if read.returncode != 0 or not out or not out[0].strip().isdigit():
+    powershell = ["powershell", "-NoProfile", "-NonInteractive", "-Command"]
+    select_screen = ("$m = Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness "
+                     "-ErrorAction Stop | Where-Object Active | Select-Object -First 1; "
+                     "if (-not $m) { exit 1 }; ")
+
+    def read_brightness() -> int | None:
+        process = subprocess.run(powershell + [select_screen + "$m.CurrentBrightness"],
+                                 capture_output=True, timeout=8, creationflags=_NO_WINDOW)
+        value = process.stdout.decode("ascii", "ignore").strip()
+        return int(value) if process.returncode == 0 and value.isdigit() else None
+
+    now = read_brightness()
+    if now is None:
         return "Этот монитор не даёт менять яркость программно, сэр."
-    now = int(out[0].strip())
     new = _next_level(mode, now, step, target)
-    cmd = f"(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,{new})"
-    res = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
-                         capture_output=True, timeout=10, creationflags=_NO_WINDOW)
+    if new == now:
+        return f"Яркость уже {now}%."
+    cmd = (select_screen + "$methods = Get-CimInstance -Namespace root/WMI "
+           "-ClassName WmiMonitorBrightnessMethods -ErrorAction Stop | "
+           "Where-Object { $_.InstanceName -eq $m.InstanceName } | Select-Object -First 1; "
+           "if (-not $methods) { exit 1 }; "
+           "$result = Invoke-CimMethod -InputObject $methods -MethodName WmiSetBrightness "
+           f"-Arguments @{{Timeout=[uint32]0;Brightness=[byte]{new}}} -ErrorAction Stop; "
+           "if ($result.ReturnValue -ne 0) { exit 1 }")
+    res = subprocess.run(powershell + [cmd], capture_output=True, timeout=8, creationflags=_NO_WINDOW)
     if res.returncode != 0:
         return "Не получилось изменить яркость, сэр."
-    return f"Яркость {new}%."
+    return _confirmed_brightness(new, read_brightness())
+
+
+def _confirmed_brightness(requested: int, actual: int | None) -> str:
+    if actual is None:
+        return "Отправил команду, но не смог подтвердить яркость экрана."
+    if actual != requested:
+        return f"Экран показывает яркость {actual}% при запросе {requested}%."
+    return f"Яркость {actual}%."
 
 
 def _next_level(mode: str, now: int, step: int, target: int | None) -> int:

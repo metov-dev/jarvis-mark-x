@@ -63,3 +63,32 @@ def test_peak_is_read_after_successful_start(meter, monkeypatch):
     meter.stop()
 
     assert meter.peak == pytest.approx(0.25)
+
+
+
+def test_isolated_meter_expires_last_reading_when_worker_stalls(monkeypatch):
+    import speaker_meter as module
+
+    meter = module.IsolatedSpeakerMeter()
+    now = 100.0
+    monkeypatch.setattr(module.time, "monotonic", lambda: now)
+    meter._samples = ((0.6, 0.3, 0.1), now)
+    assert meter.available
+    assert meter.recent == 0.6
+
+    now += module._MAX_SAMPLE_AGE_SEC
+    assert not meter.available
+    assert meter.recent == 0.0
+
+
+def test_isolated_meter_does_not_start_after_shutdown(monkeypatch):
+    import speaker_meter as module
+
+    def unexpected_start(*args, **kwargs):
+        raise AssertionError("A stopped meter must not spawn a child")
+
+    monkeypatch.setattr(module.subprocess, "Popen", unexpected_start)
+    meter = module.IsolatedSpeakerMeter()
+    meter.stop()
+    assert not meter.start()
+    assert not meter.available

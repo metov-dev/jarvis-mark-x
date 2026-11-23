@@ -7,6 +7,7 @@
 Потоки синхронизируются по времени и передаются в AFE/AEC процессор.
 """
 
+from collections import deque
 import logging
 import threading
 import time
@@ -34,6 +35,93 @@ def resample_to_16k(audio_arr: np.ndarray, orig_sr: int) -> np.ndarray:
     orig_indices = np.linspace(0, len(audio_arr) - 1, num_output_samples)
     resampled = np.interp(orig_indices, np.arange(len(audio_arr)), audio_arr)
     return np.clip(resampled, -32768, 32767).astype(np.int16)
+
+
+def playback_matches(mic: np.ndarray, reference: np.ndarray) -> bool:
+    """Уверенное совпадение кадра микрофона с недавно проигранным звуком."""
+    stride = 8
+    mic = np.asarray(mic, dtype=np.float32).reshape(-1)
+    ref = np.asarray(reference, dtype=np.float32).reshape(-1)
+    size = len(mic) - len(mic) % stride
+    if size < 64 * stride or len(ref) < size:
+        return False
+    frame = mic[:size].reshape(-1, stride).mean(axis=1)
+    frame -= frame.mean()
+    mic_power = float(frame @ frame)
+    if mic_power < 64:
+        return False
+    count = len(frame)
+
+    # Захват и вывод не обязаны начинаться на одной фазе прореживания.
+    ref_sum = np.concatenate(([0.0], np.cumsum(ref, dtype=np.float64)))
+    averaged = ((ref_sum[stride:] - ref_sum[:-stride]) / stride).astype(np.float32)
+    for phase in range(stride):
+        samples = averaged[phase::stride]
+        if len(samples) < count:
+            break
+        energy = np.concatenate(([0.0], np.cumsum(samples * samples, dtype=np.float64)))
+        total = np.concatenate(([0.0], np.cumsum(samples, dtype=np.float64)))
+        window_power = energy[count:] - energy[:-count] - (total[count:] - total[:-count]) ** 2 / count
+        similarity = np.abs(np.correlate(samples, frame)) / np.sqrt(mic_power * np.maximum(window_power, 1))
+        if np.any((window_power > count) & (similarity >= 0.94)):
+            return True
+    return False
+
+
+class PlaybackReference:
+    """Опорный звук текущего выхода WASAPI. Кольцевой буфер живёт только в памяти."""
+
+    def __init__(self):
+        self._frames = deque(maxlen=6)
+        self._lock = threading.Lock()
+        self._audio = None
+        self._stream = None
+
+    def start(self) -> bool:
+        import pyaudiowpatch as portaudio
+
+        self._audio = portaudio.PyAudio()
+        try:
+            device = self._audio.get_default_wasapi_loopback()
+            rate = int(device["defaultSampleRate"])
+            channels = int(device["maxInputChannels"])
+
+            def feed(data, frame_count, time_info, status):
+                if data:
+                    samples = np.frombuffer(data, dtype="<i2").reshape(-1, channels)
+                    samples = resample_to_16k(samples, rate)
+                    size = len(samples) - len(samples) % 8
+                    with self._lock:
+                        self._frames.append((time.monotonic(), samples[:size]))
+                return (None, portaudio.paContinue)
+
+            self._stream = self._audio.open(format=portaudio.paInt16, channels=channels,
+                                            rate=rate, input=True, input_device_index=device["index"],
+                                            frames_per_buffer=rate // 25, stream_callback=feed)
+        except Exception:
+            self.stop()
+            raise
+        return True
+
+    def matches(self, microphone: np.ndarray) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            frames = [audio for captured, audio in self._frames if now - captured <= .35]
+        samples = np.asarray(microphone).reshape(-1)
+        size = len(samples) - len(samples) % 8
+        return bool(frames and playback_matches(samples[:size], np.concatenate(frames)))
+
+    def stop(self):
+        stream, self._stream = self._stream, None
+        audio, self._audio = self._audio, None
+        try:
+            if stream is not None:
+                stream.close()
+        finally:
+            if audio is not None:
+                audio.terminate()
+            with self._lock:
+                self._frames.clear()
 
 
 class AudioCaptureEngine:

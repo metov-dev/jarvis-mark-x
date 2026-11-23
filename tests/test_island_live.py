@@ -342,14 +342,19 @@ def test_click_on_face_pokes_instead_of_opening(monkeypatch):
 
         def position(self):
             return self._p
+
+        def button(self):
+            return ui.Qt.MouseButton.LeftButton
     isl.mouseReleaseEvent(Ev(20, 15))
     assert opened == [] and isl.model.pokes
     isl.close()
     isl.deleteLater()
 
 
-def test_closed_capsule_stops_and_takes_its_glow_along():
+def test_closed_capsule_stops_and_takes_its_glow_along(monkeypatch):
     from PyQt6.QtWidgets import QApplication
+    monkeypatch.setenv("JARVIS_ISLAND_GLOW", "1")
+    monkeypatch.setenv("JARVIS_ANIMATIONS", "1")
     app = QApplication.instance() or QApplication([])
     w = ui.Island(poll=False)
     w.set_wanted(True)
@@ -366,6 +371,46 @@ def test_closed_capsule_stops_and_takes_its_glow_along():
         from PyQt6.QtCore import QCoreApplication, QEvent
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
     assert destroyed == [1]                                      # свечение ушло вместе с капсулой
+
+
+def test_fullscreen_suppression_survives_new_events(island):
+    w, _, _ = island
+    w.set_wanted(True)
+    w._apply_visibility(fullscreen=True)
+    w.dormant = True
+    w.reply("Фильм включён.")
+    w.set_wanted(True)
+    assert not w.isVisible()
+    w._set_media(ui.Media("Бэтмен: Начало", source="video", fullscreen=True), "", 0)
+    w._apply_visibility(fullscreen=False)
+    assert not w.isVisible()
+    w._set_media(ui.Media("Бэтмен: Начало", source="video"), "", 0)
+    assert w.isVisible()
+
+
+def test_dismiss_ignores_media_updates_until_next_wake(island):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+
+    w, app, _ = island
+    w.set_wanted(True)
+    _settle(w, app, 0.55)
+    QTest.mouseClick(w, Qt.MouseButton.RightButton, pos=w.capsule_rect().center().toPoint())
+    assert not w.isVisible()
+    w._set_media(ui.Media("Новый трек"), "", 0)
+    w._maybe_wake()
+    w.set_wanted(True)
+    assert not w.isVisible()
+    w.set_state("LISTENING")
+    assert w.isVisible()
+
+
+def test_passive_playback_can_go_dormant_and_uses_clean_title():
+    m = ui.IslandModel(media=ui.Media("Бэтмен: Начало (2005)", source="video"))
+    assert m.mode(False) == "activity"
+    assert m.quiet()
+    assert ui._video_title("Фильм Бэтмен: Начало (2005) смотреть онлайн бесплатно в хорошем качестве") == m.media.title
+    assert ui._video_title("Название — часть названия - YouTube") == "Название — часть названия"
 
 
 def test_mascot_eyes_wrap_around_the_sphere_and_springs_settle():

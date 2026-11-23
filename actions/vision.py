@@ -109,7 +109,15 @@ def capture_active_window_jpeg(max_size: int = 2000, quality: int = 85) -> bytes
             return _to_jpeg(_grab(rect), max_size, quality)
         except Exception as e:
             logger.debug("Снимок окна: %s", e)
-    return capture_screen_jpeg(max_size, quality)
+    return None
+
+
+def capture_failure(source: str) -> str:
+    if source in ("window", "active_window", "active"):
+        return "Не удалось сделать снимок активного окна. Откройте нужное окно и повторите."
+    if source in ("camera", "webcam"):
+        return f"Не удалось получить кадр с веб-камеры: {_CAMERA_ERROR or 'нет камеры'}."
+    return "Не удалось сделать снимок экрана."
 
 
 _CAMERA_ERROR = ""
@@ -188,15 +196,17 @@ def analyze_vision(
         if src in ("camera", "webcam"):
             image_bytes = capture_camera_jpeg()
             if not image_bytes:
-                return f"Сэр, не удалось получить кадр с веб-камеры: {_CAMERA_ERROR or 'нет камеры'}."
+                return capture_failure(src)
         elif src in ("window", "active_window", "active"):
             image_bytes = capture_active_window_jpeg()
             if not image_bytes:
-                return "Сэр, не удалось сделать снимок активного окна."
-        else:
+                return capture_failure(src)
+        elif src == "screen":
             image_bytes = capture_screen_jpeg()
             if not image_bytes:
-                return "Сэр, не удалось сделать снимок экрана."
+                return capture_failure(src)
+        else:
+            return "Не удалось определить область снимка."
 
     try:
         from google.genai import types

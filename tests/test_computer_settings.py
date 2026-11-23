@@ -75,20 +75,32 @@ def test_russian_phrases_still_work(win):
 def test_brightness_down_words_go_down(monkeypatch):
     calls = []
     monkeypatch.setattr(cs, "_OS", "Windows")
-    monkeypatch.setattr(cs, "_brightness_windows", lambda m, s, t: calls.append((m, s, t)) or "ok")
+    monkeypatch.setattr(cs, "_brightness_windows", lambda m, s, t, i: calls.append((m, s, t, i)) or "ok")
     cs.computer_settings({"action": "brightness_down", "value": "10"})
     cs.computer_settings({"action": "сделай темнее"})
     cs.computer_settings({"action": "brightness_set", "value": "30%"})
-    assert calls == [("down", 10, 10), ("down", 10, None), ("set", 30, 30)]
+    assert calls == [("down", 10, 10, 0), ("down", 10, None, 0), ("set", 30, 30, 0)]
 
 
 def test_sbc_brightness(monkeypatch):
     state = {"v": 70}
-    fake = types.SimpleNamespace(get_brightness=lambda: [state["v"]],
-                                 set_brightness=lambda v: state.update(v=v))
+    fake = types.SimpleNamespace(get_brightness=lambda display: [state["v"]],
+                                 set_brightness=lambda v, display: state.update(v=v))
     monkeypatch.setitem(sys.modules, "screen_brightness_control", fake)
     assert cs._brightness_windows("down", 20, None) == "Яркость 50%."
     assert state["v"] == 50
+
+
+def test_brightness_confirms_selected_screen_instead_of_requested_value(monkeypatch):
+    calls = []
+    values = iter(([70], [35]))
+    fake = types.SimpleNamespace(get_brightness=lambda display: next(values),
+                                 set_brightness=lambda value, display: calls.append((value, display)))
+    monkeypatch.setattr(cs, "_OS", "Windows")
+    monkeypatch.setitem(sys.modules, "screen_brightness_control", fake)
+    assert cs.computer_settings({"action": "brightness_set", "value": "30%", "display": 2}) == (
+        "Экран показывает яркость 35% при запросе 30%.")
+    assert calls == [(30, 1)]
 
 
 def test_system_volume_up_by_100_is_max(win):

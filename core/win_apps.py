@@ -265,6 +265,10 @@ def find_windows(target: str, windows: list[Window] | None = None) -> list[Windo
     key = canonical(target)
     wins = list_windows() if windows is None else windows
     exe = PROCESS.get(key, key if key.endswith(".exe") else "")
+    title_key = (target or "").strip().casefold()
+    exact = [w for w in wins if w.title.casefold() == title_key]
+    if exact:
+        return exact
     by_exe = [w for w in wins if exe and w.exe == exe]
     if by_exe:
         return by_exe
@@ -277,8 +281,29 @@ def foreground() -> Window | None:
     if not _WIN:
         return None
     import ctypes
-    hwnd = ctypes.windll.user32.GetForegroundWindow()
-    return next((w for w in list_windows() if w.hwnd == hwnd), None)
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd or not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, 4):
+        return None
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    if not pid.value or pid.value == os.getpid():
+        return None
+    size = user32.GetWindowTextLengthW(hwnd)
+    if not size:
+        return None
+    title = ctypes.create_unicode_buffer(size + 1)
+    if not user32.GetWindowTextW(hwnd, title, len(title)) or title.value in ("Program Manager", "Пуск", "Start"):
+        return None
+    exe = ""
+    try:
+        import psutil
+        exe = psutil.Process(pid.value).name().lower()
+    except Exception:
+        pass
+    return Window(int(hwnd), title.value, pid.value, exe)
 
 
 def focus(win: Window) -> bool:
@@ -287,21 +312,51 @@ def focus(win: Window) -> bool:
     запрет. Проверяем, что окно действительно впереди."""
     import ctypes
     user32 = ctypes.windll.user32
+    if not _same_window(user32, win):
+        return False
     if user32.IsIconic(win.hwnd):
-        user32.ShowWindow(win.hwnd, 9)                    # SW_RESTORE
+        user32.ShowWindowAsync(win.hwnd, 9)                    # SW_RESTORE
     user32.keybd_event(0x12, 0, 0, 0)                     # Alt вниз
     user32.keybd_event(0x12, 0, 2, 0)                     # Alt вверх
     user32.SetForegroundWindow(win.hwnd)
     time.sleep(0.15)
-    return user32.GetForegroundWindow() == win.hwnd
+    return user32.GetForegroundWindow() == win.hwnd and _same_window(user32, win)
 
 
-def show(win: Window, how: str) -> None:
+def _same_window(user32, win: Window) -> bool:
     import ctypes
-    ctypes.windll.user32.ShowWindow(win.hwnd, {"minimize": 6, "maximize": 3, "restore": 9}[how])
+    from ctypes import wintypes
+
+    pid = wintypes.DWORD()
+    return bool(user32.GetWindowThreadProcessId(win.hwnd, ctypes.byref(pid))) and pid.value == win.pid
 
 
-def close(win: Window) -> None:
-    """Вежливо закрыть окно (как крестик), не убивая процесс."""
+def _wait_for_window_state(check) -> bool:
+    deadline = time.monotonic() + 0.5
+    while not check():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.025)
+    return True
+
+
+def show(win: Window, how: str) -> bool:
     import ctypes
-    ctypes.windll.user32.PostMessageW(win.hwnd, 0x0010, 0, 0)   # WM_CLOSE
+    user32 = ctypes.windll.user32
+    if not _same_window(user32, win):
+        return False
+    state = {"minimize": user32.IsIconic, "maximize": user32.IsZoomed}[how]
+    if state(win.hwnd):
+        return True
+    if not user32.ShowWindowAsync(win.hwnd, {"minimize": 6, "maximize": 3}[how]):
+        return False
+    return _wait_for_window_state(lambda: _same_window(user32, win) and state(win.hwnd))
+
+
+def close(win: Window) -> bool | None:
+    """True — закрылось, None — ждёт (например, появился диалог сохранения)."""
+    import ctypes
+    user32 = ctypes.windll.user32
+    if not _same_window(user32, win) or not user32.PostMessageW(win.hwnd, 0x0010, 0, 0):
+        return False
+    return True if _wait_for_window_state(lambda: not _same_window(user32, win)) else None

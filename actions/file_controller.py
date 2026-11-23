@@ -63,6 +63,21 @@ def _is_sensitive(p: Path) -> bool:
     return False
 
 
+def deletion_target(raw_path: str) -> Path:
+    """Resolve the same full path for confirmation and deletion."""
+    import stat
+
+    if not raw_path:
+        raise ValueError("не указано, что именно удалить")
+    p = Path(_resolve(raw_path)).expanduser()
+    if _is_protected(p) or _is_sensitive(p):
+        raise ValueError(f"системный или защищённый файл: {p}")
+    info = p.lstat()
+    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        raise ValueError(f"путь указывает на ссылку или точку подключения: {p}")
+    return p.resolve(strict=True)
+
+
 def _to_recycle_bin(p: Path) -> None:
     """Windows: в Корзину (можно вернуть). Иначе — обычное удаление."""
     import sys
@@ -82,7 +97,7 @@ def _to_recycle_bin(p: Path) -> None:
                     ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", wintypes.LPCWSTR)]
 
     FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_SILENT = 3, 0x40, 0x10, 0x4
-    op = SHFILEOPSTRUCTW(wFunc=FO_DELETE, pFrom=str(p.resolve()) + "\0\0",
+    op = SHFILEOPSTRUCTW(wFunc=FO_DELETE, pFrom=str(p) + "\0\0",
                          fFlags=FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT)
     rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
     if rc != 0 or op.fAnyOperationsAborted:
@@ -149,17 +164,21 @@ def file_controller(parameters: dict, player=None) -> str:
         elif action == "delete":
             # Раньше путь по умолчанию был домашней папкой, а «desktop» —
             # всем рабочим столом: вызов без пути делал rmtree(~).
-            if not raw_path:
-                return "Не удаляю: не указано, что именно удалить."
-            p = Path(path)
-            if _is_protected(p) or _is_sensitive(p):
-                return f"Не удаляю системный или защищённый файл: {p}."
-            if not p.exists():
-                return f"Не найдено: {path}"
+            try:
+                p = deletion_target(raw_path)
+            except ValueError as exc:
+                return f"Не удаляю: {exc}."
+            except FileNotFoundError:
+                return f"Не найдено: {raw_path}"
+            if expected := parameters.get("_file_identity"):
+                info = p.stat()
+                if expected != (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size):
+                    return "Не удалось удалить: объект изменился после подтверждения. Повторите команду."
             _to_recycle_bin(p)
             if player:
                 player.write_log(f"FILE: В корзину {p.name}")
-            return f"Удалено (в Корзину): {p.name}."
+            import sys
+            return f"Удалено (в Корзину): {p.name}." if sys.platform == "win32" else f"Удалено: {p.name}."
 
         elif action == "move":
             if _is_sensitive(Path(path)) or _is_sensitive(Path(dest)):

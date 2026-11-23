@@ -92,6 +92,50 @@ def now_playing(app: str | None = None) -> NowPlaying | None:
         return None
 
 
+async def _playing_sessions() -> list[NowPlaying]:
+    result = []
+    for session in (await _manager()).get_sessions():
+        if int(session.get_playback_info().playback_status) == _PLAYING:
+            props = await session.try_get_media_properties_async()
+            result.append(NowPlaying(session.source_app_user_model_id or "", props.title or "",
+                                     props.artist or "", True))
+    return result
+
+
+def playing_sessions() -> list[NowPlaying] | None:
+    """Список активных сессий или None, если Windows не даёт его проверить."""
+    if not available():
+        return None
+    try:
+        return _run(_playing_sessions())
+    except Exception as exc:
+        logger.debug("Активные медиа-сессии: %s", exc)
+        return None
+
+
+async def _pause_matching(expected: NowPlaying) -> bool:
+    matches = []
+    for session in (await _manager()).get_sessions():
+        if (session.source_app_user_model_id != expected.app
+                or int(session.get_playback_info().playback_status) != _PLAYING):
+            continue
+        props = await session.try_get_media_properties_async()
+        if (props.title or "", props.artist or "") == (expected.title, expected.artist):
+            matches.append(session)
+    # Не отправляем медиа-клавишу другому приложению при смене трека или сессии.
+    return len(matches) == 1 and bool(await matches[0].try_pause_async())
+
+
+def pause_matching(expected: NowPlaying) -> bool:
+    if not expected.app or not available():
+        return False
+    try:
+        return _run(_pause_matching(expected))
+    except Exception as exc:
+        logger.debug("Пауза выбранной медиа-сессии: %s", exc)
+        return False
+
+
 async def _command(cmd: str, app: str | None) -> bool:
     s = _pick(await _manager(), app)
     if s is None:

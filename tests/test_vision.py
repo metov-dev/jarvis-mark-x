@@ -72,3 +72,23 @@ def test_camera_error_explains_privacy(monkeypatch):
     monkeypatch.setattr(vision, "_get_api_key", lambda: "k")
     out = vision.analyze_vision("что в руке", "camera")
     assert "Конфиденциальность" in out
+
+
+
+def test_failed_window_capture_never_switches_to_monitor(monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(vision, "capture_screen_jpeg",
+                        lambda *_: pytest.fail("Window capture switched to a monitor"))
+    monkeypatch.setattr(vision, "_get_api_key", lambda: "test-key")
+    monkeypatch.setattr(vision, "_foreground_rect", lambda: None)
+    assert vision.capture_active_window_jpeg() is None
+    assert "активного окна" in vision.analyze_vision("посмотри окно", "active_window")
+
+    def denied(_):
+        raise OSError("capture unavailable")
+
+    monkeypatch.setattr(vision, "_foreground_rect",
+                        lambda: {"left": 0, "top": 0, "width": 320, "height": 240})
+    monkeypatch.setattr(vision, "_grab", denied)
+    assert vision.capture_active_window_jpeg() is None

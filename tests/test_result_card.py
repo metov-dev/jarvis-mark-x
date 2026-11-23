@@ -115,3 +115,20 @@ def test_translation_message_memory_app():
 def test_failure_becomes_error_card():
     assert _data("files", {"path": "C:/Windows"}, "Ошибка: защищено")["card"] == "error"
     assert _data("send_to_telegram", {}, "Сэр, произошла ошибка при отправке")["card"] == "error"
+
+
+
+def test_movie_card_uses_structured_status_for_partial_success_and_failure():
+    args = {"title": "Бэтмен: Начало"}
+    partial = build_card("movie_player", args, {
+        "result": "Включил фильм. Полный экран включить не удалось.",
+        "outcome": "partial",
+    })
+    payload = json.loads(partial["extra"])
+    assert payload["playing"] and payload["status"] == "Играет · обычный экран"
+    failed = build_card("movie_player", args, {
+        "result": "Открыл страницу Kinogo, но не получил доступного видеоплеера.",
+        "outcome": "error",
+    })
+    assert json.loads(failed["extra"])["card"] == "error"
+    assert not failed["want_shot"]

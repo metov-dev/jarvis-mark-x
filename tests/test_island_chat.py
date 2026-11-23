@@ -89,6 +89,9 @@ def test_file_buttons():
 
             def position(self):
                 return self._p
+
+            def button(self):
+                return ui.Qt.MouseButton.LeftButton
         w.mouseReleaseEvent(Ev(w._buttons["f_sum"]))
         assert actions == [("summary", "")] and w.model.file_choice is None
         w.file_ready("quote.pdf")

@@ -49,6 +49,7 @@ def build_card(name: str, args: dict | None, result) -> dict | None:
     if name in _SKIP:
         return None
     args = dict(args or {})
+    outcome = result.get("outcome") if isinstance(result, dict) else None
     if isinstance(result, dict):
         result = result.get("result", result)
     from core.speech_text import for_chat
@@ -73,7 +74,7 @@ def build_card(name: str, args: dict | None, result) -> dict | None:
     address = address or _ADDRESS.get(name) or _TITLES.get(name, name.replace("_", " ")).lower()
 
     try:
-        data = _card_data(name, args, str(result or ""))
+        data = _card_data(name, args, str(result or ""), outcome)
     except Exception as exc:                  # карточка — украшение, не повод падать
         logger.debug("Данные карточки %s: %s", name, exc)
         data = None
@@ -95,7 +96,7 @@ def build_card(name: str, args: dict | None, result) -> dict | None:
         "title": _TITLES.get(name, name.replace("_", " ").capitalize()),
         "address": address[:90],
         "body": body,
-        "want_shot": name in _SHOT_TOOLS and sys.platform == "win32",
+        "want_shot": outcome != "error" and name in _SHOT_TOOLS and sys.platform == "win32",
         "extra": extra,
     }
 
@@ -120,10 +121,10 @@ def _items(text: str, sep: str | None = None, limit: int = 5) -> list[str]:
     return out[:limit]
 
 
-def _card_data(name: str, args: dict, result: str) -> dict | None:
+def _card_data(name: str, args: dict, result: str, outcome: str | None = None) -> dict | None:
     """Данные для особой карточки. None — обычная текстовая."""
     text = " ".join(result.split())
-    if _FAIL_RE.match(text):
+    if outcome == "error" or (outcome is None and _FAIL_RE.match(text)):
         return {"card": "error", "text": text}
 
     if name == "weather":
@@ -168,6 +169,9 @@ def _card_data(name: str, args: dict, result: str) -> dict | None:
             playing = False
         status = _MEDIA_STATUS.get(action, text[:60]) if playing or action in ("pause", "stop") \
             else (text if len(text) <= 60 else text[:59] + "…")
+        if name == "movie_player" and outcome in ("success", "partial"):
+            playing = True
+            status = "Играет" if outcome == "success" else "Играет · обычный экран"
         return {"card": "media", "media": "music" if name == "music_player" else "film",
                 "title": title, "status": status, "playing": playing}
 

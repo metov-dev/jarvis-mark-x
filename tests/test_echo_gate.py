@@ -3,7 +3,7 @@
 музыки не открывает дорогу самой музыке в микрофон."""
 import random
 
-from core.echo_gate import EchoGate
+from core.echo_gate import EchoGate, WakeLeadIn
 
 
 def _learn(g: EchoGate, coupling=800.0, level=0.5, n=60, seed=1):
@@ -84,3 +84,21 @@ def test_only_sounding_apps_are_ducked(tmp_path):
         assert _wait(lambda: spotify.v == 0.9 and game.v == 0.7)
     finally:
         dc.close()
+
+
+def test_wake_lead_in_preserves_soft_onset_after_voice_is_confirmed():
+    wake = WakeLeadIn()
+    assert wake.push(b"old", voice=False) == ()
+    assert wake.push(b"d", voice=False) == ()
+    assert wake.push(b"zh", voice=False) == (bytes(3),)
+    assert wake.push(b"arvis", voice=True) == (b"d", b"zh", b"arvis")
+
+
+def test_filtered_speaker_frames_cannot_reach_wake_without_voice():
+    wake = WakeLeadIn()
+    for _ in range(2):
+        assert wake.push(b"noise", voice=False) == ()
+    for _ in range(10):
+        assert wake.push(b"noise", voice=False) == (bytes(5),)
+    wake.clear()
+    assert wake.push(b"voice", voice=True) == (b"voice",)

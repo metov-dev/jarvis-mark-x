@@ -168,13 +168,23 @@ class DialogContext:
         )
         if is_volume_ctx:
             # «ещё», «чуть-чуть», «немного», «ещё раз», «повтори»
-            if re.fullmatch(r"еще|ещё|еще раз|ещё раз|чуть[- ]чуть|немного|еще чуть[- ]чуть|ещё чуть[- ]чуть|повтори|давай еще|давай ещё", t):
+            if re.fullmatch(r"ещ[её](?: раз| немного| чуть[- ]чуть)?|чуть[- ]чуть|немного|повтори|давай ещ[её]", t):
                 reply_key = "louder" if last.action == "volume_up" else "quieter"
                 return Quick(last.tool, {"action": last.action}, reply_key, t)
 
             # «хватит», «нормально», «достаточно», «хорошо», «пойдёт»
             if re.fullmatch(r"хватит|нормально|достаточно|хорошо|пойдет", t):
                 return Quick(None, {}, "ack", t)
+
+        # Короткие реплики о сериях привязаны к последней команде о сериале.
+        if last.tool == "movie_player" and (
+            last.args.get("season") is not None or last.action.startswith("series_")
+        ):
+            title = str(last.args.get("title") or "")
+            if re.fullmatch(r"(?:а |и )?(?:дальше|следующую|следующая)", t):
+                return Quick("movie_player", {"action": "series_next", "title": title}, "", t)
+            if re.fullmatch(r"(?:а |и )?(?:с начала|сначала)", t):
+                return Quick("movie_player", {"action": "series_restart", "title": title}, "", t)
 
         # ── 4. Контекст музыки / плеера ───────────────────────────────────────
         if last.tool == "music_player":
@@ -191,6 +201,76 @@ class DialogContext:
                 return Quick("music_player", {"action": "now_playing"}, "", t)
 
         return None
+
+
+_WORK_APPS = {"code.exe", "cursor.exe", "pycharm64.exe", "devenv.exe", "winword.exe", "excel.exe", "powerpnt.exe"}
+
+
+def foreground_context() -> dict:
+    """Сведения о переднем приложении без снимков экрана."""
+    from core import win_apps
+
+    snapshot = {}
+    window = win_apps.foreground()
+    if window and window.exe:
+        from pathlib import PureWindowsPath
+        app = PureWindowsPath(window.exe).name
+        if app.casefold() != "jarvis.exe":
+            snapshot["application"] = app
+            snapshot["window"] = (window.title or "")[:160]
+    return snapshot
+
+
+def desktop_context() -> dict:
+    from core import media_session
+
+    snapshot = foreground_context()
+    media = media_session.now_playing()
+    if media and media.playing:
+        snapshot["playing"] = {"application": media.app, "title": (media.title or "")[:160]}
+    return snapshot
+
+
+class WorkContext:
+    """Последнее видимое рабочее окно. Данные остаются в памяти процесса."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._last: tuple[str, float] | None = None
+
+    def observe(self, snapshot: dict, now: float) -> None:
+        title = snapshot.get("window", "").strip()
+        if title and snapshot.get("application", "").casefold() in _WORK_APPS:
+            with self._lock:
+                self._last = (title, now)
+
+    def describe(self, now: float) -> str:
+        with self._lock:
+            recent = self._last
+        if not recent or not 0 <= now - recent[1] <= 3600:
+            return "За последний час я не видел рабочего окна."
+        return f"Последнее рабочее окно — «{recent[0]}»."
+
+
+class ResumeObserver:
+    """Отмечает возвращение к рабочему окну после перерыва без озвучки."""
+
+    def __init__(self):
+        self._current: tuple[str, str] | None = None
+        self._away_since: dict[tuple[str, str], float] = {}
+
+    def observe(self, snapshot: dict, now: float) -> bool:
+        app = snapshot.get("application", "").casefold()
+        title = snapshot.get("window", "").strip()
+        current = (app, title) if app in _WORK_APPS and title else None
+        if current == self._current:
+            return False
+        self._away_since = {key: ts for key, ts in self._away_since.items() if now - ts <= 3600}
+        if self._current:
+            self._away_since[self._current] = now
+        self._current = current
+        left = self._away_since.pop(current, None) if current else None
+        return left is not None and now - left >= 600
 
 
 # ── Глобальный синглтон ───────────────────────────────────────────────────────

@@ -677,7 +677,7 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool 
             # PC connected but didn't respond — never fall through to Gemini
             await _send_text(
                 ws,
-                "❌ ПК не ответил. Убедись, что Джарвис на компьютере запущен, и попробуй ещё раз.",
+                "⚠ Подтверждение команды не пришло. Проверь результат в Jarvis на ПК.",
                 want_audio=False,
             )
         return
@@ -763,12 +763,16 @@ async def _handle_voice(ws: WebSocket, user_id: int, pcm: bytes, want_audio: boo
         wav = _pcm_to_wav(pcm)
         # Transcribe first, then run the recognised text through the SAME pipeline
         # as typed text — so voice commands control the PC, not just chat.
-        transcript = await _gemini.transcribe(wav, mime_type="audio/wav")
-        if not transcript:
-            await ws.send_text(json.dumps({
-                "type": "text",
-                "text": "Не разобрал, что ты сказал. Попробуй ещё раз чуть чётче."
-            }))
+        from telegram_bot.gemini_client import is_transcription_instruction
+
+        transcript = (await _gemini.transcribe(wav, mime_type="audio/wav") or "").strip()
+        if not transcript or is_transcription_instruction(transcript):
+            reason = getattr(_gemini, "last_error", "")
+            message = {
+                "quota": "Распознавание сейчас недоступно из-за лимита. Можно написать команду.",
+                "error": "Сервис распознавания не ответил. Можно написать команду.",
+            }.get(reason, "Не разобрал речь. Попробуй записать ещё раз или напиши команду.")
+            await ws.send_text(json.dumps({"type": "text", "text": message}))
             return
         # Show the user what was recognised
         await ws.send_text(json.dumps({"type": "transcript_user", "text": transcript}))

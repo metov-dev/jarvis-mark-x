@@ -2,8 +2,8 @@
 
 Раньше фильм «управлялся» нажатием клавиш в то, что впереди: Space
 прокручивал страницу, стрелки листали, пауза жала не туда, а спросить
-«сколько осталось» было не у кого. Теперь Джарвис открывает Chrome (нет —
-Яндекс.Браузер, Edge — в последнюю очередь) со своим профилем и портом отладки и говорит с плеером страницы
+«сколько осталось» было не у кого. Теперь Джарвис открывает Яндекс Браузер
+или другой совместимый браузер со своим профилем и управляет плеером
 напрямую: play/pause, перемотка на точное время, громкость, mute, полный
 экран, текущее время и длительность — и сразу видит, получилось ли.
 
@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import urllib.request
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ _direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def _http(path: str, method: str = "GET", timeout: float = 2.0):
-    req = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}", method=method)
+    req = urllib.request.Request(f"http://127.0.0.1:{_browser_port()}{path}", method=method)
     with _direct.open(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8") or "null")
 
@@ -51,14 +52,32 @@ def running() -> bool:
         return False
 
 
+@lru_cache(maxsize=1)
+def _windows_default_browser() -> str | None:
+    import ctypes
+    from ctypes import wintypes
+
+    # ASSOCF_IS_PROTOCOL и ASSOCSTR_EXECUTABLE: текущая привязка HTTPS в Windows.
+    query = ctypes.windll.shlwapi.AssocQueryStringW
+    query.argtypes = (wintypes.DWORD, wintypes.DWORD, wintypes.LPCWSTR,
+                      wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
+    query.restype = ctypes.c_long
+    path = ctypes.create_unicode_buffer(32768)
+    length = wintypes.DWORD(len(path))
+    if query(0x1000, 2, "https", None, path, ctypes.byref(length)) == 0:
+        exe = path.value
+        if os.path.basename(exe).lower() in {"browser.exe", "yandex.exe", "chrome.exe", "msedge.exe"}:
+            return exe if os.path.isfile(exe) else None
+    return None
+
+
 def browser_exe() -> str | None:
     env = os.getenv("JARVIS_BROWSER", "").strip()
     if env and os.path.isfile(env):
         return env
     if sys.platform == "win32":
         from actions.browser_control import _browser_exe
-        # Владелец просил не Edge: Chrome, потом Яндекс; Edge — только если других нет.
-        return _browser_exe("chrome") or _browser_exe("yandex") or _browser_exe("edge")
+        return _browser_exe("yandex") or _windows_default_browser() or _browser_exe("chrome") or _browser_exe("edge")
     for name in ("google-chrome", "chromium", "chromium-browser", "chrome"):
         path = shutil.which(name)
         if path:
@@ -66,12 +85,22 @@ def browser_exe() -> str | None:
     return None
 
 
+def _is_yandex() -> bool:
+    return os.path.basename(browser_exe() or "").lower() in {"browser.exe", "yandex.exe"}
+
+
+def _browser_port() -> int:
+    # Старое окно Chrome может остаться открытым после перезапуска Джарвиса.
+    return PORT + 1 if _is_yandex() and not os.getenv("JARVIS_CDP_PORT") else PORT
+
+
 def _profile_dir() -> str:
+    name = "browser-yandex" if _is_yandex() else "browser"
     try:
         from core.paths import get_data_root
-        d = os.path.join(str(get_data_root()), "browser")
+        d = os.path.join(str(get_data_root()), name)
     except Exception:
-        d = os.path.join(os.path.expanduser("~"), ".jarvis-browser")
+        d = os.path.join(os.path.expanduser("~"), f".jarvis-{name}")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -83,9 +112,9 @@ def ensure_browser(headless: bool = False, timeout: float = 25.0) -> bool:
         return True
     exe = browser_exe()
     if not exe:
-        logger.warning("Не нашёл Chrome/Edge для окна Джарвиса")
+        logger.warning("Не нашёл совместимый браузер для окна Джарвиса")
         return False
-    args = [exe, f"--remote-debugging-port={PORT}", f"--user-data-dir={_profile_dir()}",
+    args = [exe, f"--remote-debugging-port={_browser_port()}", f"--user-data-dir={_profile_dir()}",
             "--no-first-run", "--no-default-browser-check",
             # Видео запускается само и со звуком — без клика по странице.
             "--autoplay-policy=no-user-gesture-required",
@@ -139,22 +168,38 @@ class Tab:
         self.target_id = target_id
         self._ws = connect(ws_url, max_size=None, open_timeout=5)
         self._id = 0
+        self._embedded_video = False
+        self._film_player_required = False
+        self._film_player = None
+        self._iframe_sessions: dict[str, str] = {}
         # Вкладкой пользуются сразу несколько потоков: команды голосом,
         # капсула (что играет), панель. Соединение одно, и чужой recv
         # посреди своего запроса — ConcurrencyError. Команды — по очереди.
         self._lock = threading.RLock()
 
-    def call(self, method: str, timeout: float = 10.0, **params):
+    def call(self, method: str, timeout: float = 10.0, *, session_id: str | None = None, **params):
         with self._lock:
             self._id += 1
             my = self._id
-            self._ws.send(json.dumps({"id": my, "method": method, "params": params}))
+            request = {"id": my, "method": method, "params": params}
+            if session_id:
+                request["sessionId"] = session_id
+            self._ws.send(json.dumps(request))
             end = time.monotonic() + timeout
             while True:
                 left = end - time.monotonic()
                 if left <= 0:
                     raise TimeoutError(f"CDP {method}: нет ответа")
                 msg = json.loads(self._ws.recv(timeout=left))
+                if msg.get("method") == "Target.attachedToTarget":
+                    event = msg["params"]
+                    target = event["targetInfo"]
+                    if target.get("type") == "iframe":
+                        self._iframe_sessions[target["targetId"]] = event["sessionId"]
+                elif msg.get("method") == "Target.detachedFromTarget":
+                    session = msg["params"]["sessionId"]
+                    self._iframe_sessions = {target: sid for target, sid in self._iframe_sessions.items()
+                                             if sid != session}
                 if msg.get("id") == my:
                     if "error" in msg:
                         raise RuntimeError(f"CDP {method}: {msg['error'].get('message')}")
@@ -170,7 +215,45 @@ class Tab:
         return r.get("result", {}).get("value")
 
     def navigate(self, url: str):
-        self.call("Page.navigate", url=url)
+        self._embedded_video = False
+        self._film_player_required = False
+        self._film_player = None
+        result = self.call("Page.navigate", url=url)
+        if result.get("errorText") or result.get("isDownload"):
+            raise RuntimeError(result.get("errorText") or "Браузер начал скачивание вместо просмотра")
+
+    def enable_embedded_video(self):
+        self.call("Target.setAutoAttach", autoAttach=True, waitForDebuggerOnStart=False,
+                  flatten=True, filter=[{"type": "iframe"}])
+        self._embedded_video = True
+
+    def video_frame(self, selector=None):
+        """Контекст видимого HTML5-плеера во вложенном кадре вкладки."""
+        if not self._embedded_video:
+            return None
+        try:
+            tree = self.call("Page.getFrameTree", timeout=2).get("frameTree", {})
+        except (OSError, RuntimeError):
+            return None
+        with self._lock:
+            sessions = dict(self._iframe_sessions)
+        children = list(tree.get("childFrames", ()))
+        frame_ids = []
+        while children:
+            child = children.pop()
+            frame_ids.append(child["frame"]["id"])
+            children.extend(child.get("childFrames", ()))
+        for frame_id in dict.fromkeys([*frame_ids, *sessions]):
+            try:
+                session_id = sessions.get(frame_id)
+                world = self.call("Page.createIsolatedWorld", timeout=1, session_id=session_id,
+                                  frameId=frame_id, worldName="JarvisVideo")
+                frame = _VideoFrame(self, session_id, world["executionContextId"])
+                if frame.eval(f"Boolean({selector or _VIDEO})"):
+                    return frame
+            except (OSError, RuntimeError):
+                continue
+        return None
 
     def wait(self, js: str, timeout: float = 10.0, interval: float = 0.2):
         """Ждать, пока выражение вернёт что-то истинное. Возвращает значение."""
@@ -238,7 +321,8 @@ def bring_to_front():
             from core import win_apps
             title = (t.eval("document.title") or "").strip()
             wins = [w for w in win_apps.list_windows()
-                    if w.exe in ("chrome.exe", "browser.exe", "msedge.exe") and title and title[:30] in w.title]
+                    if w.exe in ("chrome.exe", "browser.exe", "yandex.exe", "msedge.exe")
+                    and title and title[:30] in w.title]
             if wins:
                 win_apps.focus(wins[0])
         except Exception as exc:
@@ -252,6 +336,33 @@ _VIDEO = ("(() => { const vs = [...document.querySelectorAll('video')]"
           ".filter(v => v.getBoundingClientRect().width > 50);"
           " vs.sort((a, b) => b.clientWidth * b.clientHeight - a.clientWidth * a.clientHeight);"
           " return vs[0] || null; })()")
+_PINNED_VIDEO = ("(window.__jarvisFilm?.isConnected && window.__jarvisFilm.duration "
+                 ">= window.__jarvisFilmMin ? window.__jarvisFilm : null)")
+
+
+def has_embedded_video_target() -> bool:
+    return bool(getattr(_tab, "_embedded_video", False))
+
+
+def pin_film_player(t: Tab, minimum_duration: float, *, frame_selector: str | None = None) -> bool:
+    """Выбирает полноразмерный фильм и удерживает именно этот элемент."""
+    t._film_player_required = True
+    choose = ("(() => [...document.querySelectorAll('video')].filter(v => "
+              "v.readyState >= 1 && v.getBoundingClientRect().width > 50 && "
+              f"Number.isFinite(v.duration) && v.duration >= {minimum_duration!r})"
+              ".sort((a,b) => b.duration - a.duration)[0] || null)()")
+    script = f"(window.__jarvisFilmMin = {minimum_duration!r}, Boolean(window.__jarvisFilm = {choose}))"
+    frame = t.video_frame(f"({frame_selector}) && Boolean({choose})" if frame_selector else choose)
+    for context in ((frame,) if frame_selector else (frame, t)):
+        if context is None:
+            continue
+        try:
+            if context.eval(script):
+                t._film_player = context
+                return True
+        except (OSError, RuntimeError):
+            continue
+    return False
 
 _STATE = ("(v => v ? {paused: v.paused, t: v.currentTime, d: v.duration || 0,"
           " vol: v.volume, muted: v.muted,"
@@ -259,12 +370,33 @@ _STATE = ("(v => v ? {paused: v.paused, t: v.currentTime, d: v.duration || 0,"
           " ready: v.readyState} : null)")
 
 
+class _VideoFrame:
+    def __init__(self, tab: Tab, session_id: str | None, context_id: int):
+        self.tab = tab
+        self.session_id = session_id
+        self.context_id = context_id
+
+    def eval(self, js: str, await_promise: bool = False):
+        result = self.tab.call("Runtime.evaluate", timeout=3, session_id=self.session_id,
+                               contextId=self.context_id, expression=js, returnByValue=True,
+                               awaitPromise=await_promise, userGesture=True)
+        if result.get("exceptionDetails"):
+            raise RuntimeError(result["exceptionDetails"].get("text", "JS error"))
+        return result.get("result", {}).get("value")
+
+
 def video_state(t: Tab | None = None) -> dict | None:
     t = t or tab(create=False)
     if not t:
         return None
     try:
-        return t.eval(f"{_STATE}({_VIDEO})")
+        if t._film_player_required:
+            return t._film_player.eval(f"{_STATE}({_PINNED_VIDEO})") if t._film_player else None
+        js = f"{_STATE}({_VIDEO})"
+        state = t.eval(js)
+        if state or not (frame := t.video_frame()):
+            return state
+        return frame.eval(js)
     except Exception:
         return None
 
@@ -275,9 +407,20 @@ def video_js(body: str, t: Tab | None = None, await_promise: bool = False):
     t = t or tab(create=False)
     if not t:
         return None
-    js = (f"(async () => {{ const v = {_VIDEO}; if (!v) return null; {body};"
+    selector = _PINNED_VIDEO if t._film_player_required else _VIDEO
+    js = (f"(async () => {{ const v = {selector}; if (!v) return null; {body};"
           f" return {_STATE}(v); }})()")
-    return t.eval(js, await_promise=True)
+    if t._film_player_required:
+        if not t._film_player:
+            return None
+        try:
+            return t._film_player.eval(js, await_promise=True)
+        except (OSError, RuntimeError):
+            return None
+    result = t.eval(js, await_promise=True)
+    if result is None and (frame := t.video_frame()):
+        return frame.eval(js, await_promise=True)
+    return result
 
 
 def show_window(t: Tab | None = None) -> None:
@@ -315,8 +458,13 @@ def fullscreen(on: bool = True, t: Tab | None = None, settle_sec: float = 5.0) -
         return False
     if on:
         show_window(t)
+        if t._film_player_required:
+            return bool(t._film_player and _fullscreen_once(t._film_player, True, _PINNED_VIDEO)
+                        and _holds(lambda: _is_fullscreen(t), settle_sec * 0.3))
         if _request_and_hold(t, settle_sec * 0.4):
             return True
+        if getattr(t, "_embedded_video", False) and (frame := t.video_frame()):
+            return _fullscreen_once(frame, True) and _holds(lambda: _is_fullscreen(t), settle_sec * 0.3)
         # Плееры вроде VK Видео сами сбрасывают полный экран, включённый не их
         # кнопкой: фильм играл в окне. Жмём их собственную кнопку — как человек.
         if not _is_fullscreen(t) and _click_fullscreen_button(t) \
@@ -487,9 +635,9 @@ def _click_fullscreen_button(t: Tab) -> bool:
         return False
 
 
-def _fullscreen_once(t: Tab, on: bool) -> bool:
+def _fullscreen_once(t: Tab, on: bool, selector: str = _VIDEO) -> bool:
     if on:
-        js = ("(async () => { const v = " + _VIDEO + "; if (!v) return false;"
+        js = ("(async () => { const v = " + selector + "; if (!v) return false;"
               " if (document.fullscreenElement) return true;"
               " const box = v.closest('.html5-video-player, [class*=\"player\" i], [class*=\"Player\"]') || v;"
               " try { await box.requestFullscreen(); } catch (e) { await v.requestFullscreen(); }"

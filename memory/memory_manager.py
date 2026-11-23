@@ -189,22 +189,30 @@ def search(query: str, limit: int = 12) -> list[tuple[str, str, str]]:
     return [f for s, f in sorted(scored, key=lambda x: -x[0]) if s >= 60][:limit]
 
 
+def facts_to_forget(query: str, memory: dict | None = None) -> list[tuple[str, str, str]]:
+    from rapidfuzz import fuzz
+
+    q = query.strip().lower()
+    if not q:
+        return []
+    matches = []
+    for cat, key, value in all_facts(memory):
+        text = f"{key} {value}".lower()
+        if max(fuzz.partial_ratio(q, text), fuzz.token_set_ratio(q, text)) >= 80:
+            matches.append((cat, key, text))
+    return matches
+
+
 def forget_matching(query: str) -> list[tuple[str, str, str]]:
     """Забыть факты, которые явно про это (сходство ≥ 80)."""
-    from rapidfuzz import fuzz
     q = (query or "").strip().lower()
     if not q:
         return []
-    gone = []
     with _LOCK:
         mem = load_memory()
-        for cat, items in list(mem.items()):
-            for key in list(items or {}):
-                val = items[key]
-                text = f"{key} {val.get('value', val) if isinstance(val, dict) else val}".lower()
-                if max(fuzz.partial_ratio(q, text), fuzz.token_set_ratio(q, text)) >= 80:
-                    gone.append((cat, key, text))
-                    del items[key]
+        gone = facts_to_forget(q, mem)
+        for cat, key, _ in gone:
+            del mem[cat][key]
         if gone:
             atomic_write_json(_MEMORY_FILE, mem)
     _share(lambda sh: sh.queue_forget(q))      # и у бота: там могли быть свои факты об этом

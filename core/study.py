@@ -467,10 +467,12 @@ def study() -> Study:
 
 def focus(minutes: float = 25, subject: str = "") -> str:
     """Режим учёбы: таймер помидоро через часы Джарвиса."""
-    from core.clock import clock
+    from core.clock import SAVE_FAILED, clock
     minutes = max(5, min(120, float(minutes or 25)))
     label = f"учёба{': ' + subject if subject else ''}"
-    clock().timer_set(int(minutes * 60), label)
+    result = clock().timer_set(int(minutes * 60), label)
+    if result == SAVE_FAILED:
+        return result
     return (f"Режим учёбы: {int(minutes)} минут{' по ' + subject if subject else ''}. Скажу, когда перерыв. "
             "Телефон — в сторону.")
 

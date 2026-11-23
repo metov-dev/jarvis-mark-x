@@ -10,10 +10,11 @@
   4. Реакция:
      - Если пользователь говорит «нет / отмени / я ещё работаю» -> выключение отменяется.
      - Если пользователь говорит «да / выключай / спокойной ночи» -> компьютер выключается сразу.
-     - Если пользователь молчит _CONFIRM_SEC (уснул) -> компьютер автоматически выключается.
+     - Если пользователь молчит _CONFIRM_SEC -> компьютер остаётся включённым.
 """
 
 import logging
+import math
 import platform
 import subprocess
 import threading
@@ -55,6 +56,7 @@ class SleepTimerManager:
         self._duration_sec: float = 0.0
         self._is_waiting_confirmation = False
         self._confirm_deadline: float = 0.0
+        self.question_turn = 0
         self._bot_ref = None
         self._confirm_event = threading.Event()
 
@@ -79,41 +81,43 @@ class SleepTimerManager:
 
     def start_timer(self, minutes: float, player=None, bot=None) -> str:
         """Запускает таймер сна на указанное количество минут."""
+        if not math.isfinite(minutes) or minutes <= 0 or not math.isfinite(minutes * 60):
+            return "Укажите корректное время в минутах, сэр."
         if bot:
             self._bot_ref = bot
 
         # Отменяем предыдущий таймер если был
         self.cancel_timer(player=None)
 
-        if minutes <= 0:
-            return "Укажите корректное время в минутах, сэр."
-
         self._duration_sec = minutes * 60.0
         self._target_time = time.time() + self._duration_sec
-        self._cancel_event.clear()
+        self._cancel_event.set()
+        cancelled = self._cancel_event = threading.Event()
+        deadline = self._target_time
         self._is_waiting_confirmation = False
 
         def _worker():
-            logger.info("SleepTimer: Запущен на %.1f минут (до %s)", minutes, time.strftime('%H:%M:%S', time.localtime(self._target_time)))
+            logger.info("SleepTimer: Запущен на %.1f минут (до %s)", minutes, time.strftime('%H:%M:%S', time.localtime(deadline)))
             
             # Ждём завершения таймера
-            if self._cancel_event.wait(self._duration_sec):
-                logger.info("SleepTimer: Таймер отменён до срабатывания")
-                return
+            while (remaining := deadline - time.time()) > 0:
+                if cancelled.wait(min(remaining, 1.0)):
+                    logger.info("SleepTimer: Таймер отменён до срабатывания")
+                    return
 
             # Таймер истёк — переходим к фазе подтверждения
-            self._on_timer_expired(player)
+            self._on_timer_expired(player, cancelled)
 
         self._timer_thread = threading.Thread(target=_worker, daemon=True, name="sleep-timer-worker")
         self._timer_thread.start()
 
         mins_int = int(minutes)
         if mins_int == minutes:
-            time_str = f"{mins_int} мин."
+            time_str = f"{mins_int} мин"
         else:
-            time_str = f"{minutes:.1f} мин."
+            time_str = f"{minutes:g} мин"
 
-        msg = f"Таймер сна установлен на {time_str}. Через {time_str} я проверю, спите ли вы, и выключу компьютер."
+        msg = f"Таймер сна установлен на {time_str}. Через {time_str} я спрошу, можно ли выключить компьютер."
         if player:
             player.write_log(f"SYS: 🌙 Таймер сна на {time_str}")
         return msg
@@ -121,7 +125,11 @@ class SleepTimerManager:
     def cancel_timer(self, player=None) -> str:
         """Отменяет активный таймер сна."""
         if getattr(self, "_shutdown_scheduled", False) and _OS == "Windows":
-            subprocess.run(["shutdown", "/a"], capture_output=True, timeout=10)
+            try:
+                subprocess.run(["shutdown", "/a"], capture_output=True, timeout=10, check=True)
+            except (OSError, subprocess.SubprocessError) as exc:
+                logger.warning("SleepTimer: не удалось отменить выключение: %s", exc)
+                return "Не удалось отменить запланированное выключение, сэр."
             self._shutdown_scheduled = False
             if player:
                 player.write_log("SYS: ✕ Выключение отменено")
@@ -140,10 +148,13 @@ class SleepTimerManager:
 
     def get_status(self) -> str:
         """Возвращает текущий статус таймера сна."""
-        if not self.is_active():
+        if self._is_waiting_confirmation:
+            return "Время вышло. Жду вашего разрешения выключить компьютер, сэр."
+        remaining = self.get_remaining_seconds()
+        if remaining <= 0:
             return "Таймер сна не установлен, сэр."
 
-        rem_sec = int(self.get_remaining_seconds())
+        rem_sec = math.ceil(remaining)
         rem_min = rem_sec // 60
         rem_sec_left = rem_sec % 60
 
@@ -151,35 +162,39 @@ class SleepTimerManager:
             return f"Таймер сна активен: осталось {rem_min} мин {rem_sec_left} сек."
         return f"Таймер сна активен: осталось {rem_sec_left} сек."
 
-    def _on_timer_expired(self, player=None):
+    def _on_timer_expired(self, player=None, cancelled=None):
         """Срабатывает по истечении основного времени."""
+        cancelled = self._cancel_event if cancelled is None else cancelled
+        if cancelled is not self._cancel_event or cancelled.is_set():
+            return
         logger.info("SleepTimer: Время сна наступило. Запрос подтверждения у пользователя.")
-        self._is_waiting_confirmation = True
-        self._confirm_deadline = time.time() + _CONFIRM_SEC
         self._confirm_event.clear()
+        deadline = self._confirm_deadline = time.monotonic() + _CONFIRM_SEC
+        self.question_turn = getattr(self._bot_ref, "_user_turn", 0)
+        self._is_waiting_confirmation = True
 
         if player:
             player.write_log(f"SYS: 🌙 Время сна наступило. Жду подтверждения ({_CONFIRM_SEC:.0f} сек)...")
 
         self._say(_ASK_PROMPT, player)
 
-        # «нет» -> cancel_event, «да» -> confirm_event, молчание -> выключение.
-        deadline = time.time() + _CONFIRM_SEC
-        while time.time() < deadline:
-            if self._cancel_event.wait(0.2):
-                self._is_waiting_confirmation = False
-                logger.info("SleepTimer: Выключение отменено пользователем.")
-                return
-            if self._confirm_event.is_set():
+        while time.monotonic() < deadline:
+            if cancelled.wait(min(0.2, max(0, deadline - time.monotonic()))) or self._confirm_event.is_set():
                 break
+        if cancelled is not self._cancel_event:
+            return
         self._is_waiting_confirmation = False
 
-        logger.info("SleepTimer: подтверждено или молчание %.0f с — выключаю ПК.", _CONFIRM_SEC)
-        self._execute_shutdown(player)
+        if not self._confirm_event.is_set() or cancelled.is_set():
+            logger.info("SleepTimer: подтверждение не получено. Компьютер остаётся включённым.")
+            return
+
+        logger.info("SleepTimer: выключение подтверждено.")
+        self._execute_shutdown(player, cancelled)
 
     def confirm_shutdown(self) -> str:
         """Пользователь ответил «да» на вопрос о выключении."""
-        if not self._is_waiting_confirmation:
+        if not self._is_waiting_confirmation or time.monotonic() >= self._confirm_deadline:
             return "Выключение сейчас не ожидает подтверждения, сэр."
         self._confirm_event.set()
         return "Выключаю компьютер. Спокойной ночи, сэр."
@@ -190,14 +205,16 @@ class SleepTimerManager:
         elif player and hasattr(player, "speak"):
             player.speak(text)
 
-    def _execute_shutdown(self, player=None):
+    def _execute_shutdown(self, player=None, cancelled=None):
         """Выполняет реальное выключение компьютера."""
         if player:
             player.write_log("SYS: 🔌 Завершение работы компьютера (Таймер сна)")
 
         self._say(_GOODBYE_PROMPT, player)
 
-        time.sleep(4.0)  # Даём Джарвису договорить фразу прощания
+        cancelled = self._cancel_event if cancelled is None else cancelled
+        if cancelled.wait(4.0):  # Пока звучит прощание, команду можно отменить.
+            return
 
         try:
             if _OS == "Windows":
@@ -207,7 +224,7 @@ class SleepTimerManager:
                 # (микрофон выключен, переподключение, вышел на минуту).
                 subprocess.run(["shutdown", "/s", "/t", str(_SHUTDOWN_DELAY_SEC),
                                 "/c", "Джарвис: таймер сна. Скажите «отмени таймер сна»."],
-                               capture_output=True, timeout=10)
+                               capture_output=True, timeout=10, check=True)
                 self._shutdown_scheduled = True
             elif _OS == "Darwin":
                 subprocess.run(["osascript", "-e", 'tell app "System Events" to shut down'], timeout=10)
@@ -233,7 +250,8 @@ def sleep_timer(parameters: dict, player=None, bot=None) -> str:
         text: исходный текст пользователя (для парсинга времени)
     """
     action = (parameters.get("action") or "set").strip().lower()
-    duration = parameters.get("duration_minutes") or parameters.get("minutes") or parameters.get("duration")
+    duration = next((parameters[key] for key in ("duration_minutes", "minutes", "duration")
+                     if parameters.get(key) is not None), None)
 
     # Если действие — отмена
     if action in ("cancel", "отмена", "отменить", "стоп", "выключи_таймер"):
@@ -246,12 +264,12 @@ def sleep_timer(parameters: dict, player=None, bot=None) -> str:
     if action in ("confirm", "yes", "да", "подтвердить"):
         return sleep_timer_manager.confirm_shutdown()
 
-    # Парсинг длительности
-    minutes = 30.0  # Значение по умолчанию
-    if duration is not None:
-        try:
-            minutes = float(duration)
-        except (ValueError, TypeError):
-            minutes = 30.0
-
+    try:
+        if isinstance(duration, bool):
+            raise ValueError
+        minutes = float(duration)
+    except (ValueError, TypeError, OverflowError):
+        return "Укажите корректное время в минутах, сэр."
+    if not math.isfinite(minutes) or minutes <= 0 or not math.isfinite(minutes * 60):
+        return "Укажите корректное время в минутах, сэр."
     return sleep_timer_manager.start_timer(minutes, player=player, bot=bot)

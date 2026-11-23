@@ -5,11 +5,14 @@ Chrome/Chromium с локальной страницей и видео (проп
 нет): запуск, полный экран, перемотка, громкость, mute, пауза, время.
 """
 import http.server
+import json
 import os
 import re
 import shutil
 import subprocess
 import threading
+from collections import deque
+from types import SimpleNamespace
 
 import pytest
 
@@ -43,6 +46,185 @@ def test_film_prefers_full_movie_over_trailer_and_review():
 
 def test_non_film_search_takes_best_title_match():
     assert vp._pick_vk(RESULTS[:1], "Железный человек 2", film=False)["id"] == "-1_1"
+
+
+def test_kinogo_selects_exact_title_and_year_on_requested_host():
+    movie = vp._KINOGO_HOME + "123-dyuna.html"
+    another = vp._KINOGO_HOME + "456-dyuna.html"
+    links = [{"url": another, "title": "Дюна (1984)"},
+             {"url": movie, "title": "Дюна (2021) смотреть онлайн"},
+             {"url": "https://elsewhere.example/dyuna.html", "title": "Дюна (2021)"}]
+    assert vp._kinogo_matches("Дюна 2021", links) == {movie}
+    assert vp._kinogo_matches("Дюна", links) == {movie, another}
+
+
+def test_movie_command_defaults_to_kinogo_and_accepts_explicit_vk(monkeypatch):
+    from actions.movie_player import movie_player
+
+    monkeypatch.setattr(vp, "play_kinogo", lambda title, player, launch: f"Kinogo {title}")
+    monkeypatch.setattr(vp, "play_film", lambda title, player, launch: f"VK {title}")
+    assert movie_player({"action": "play", "title": "Дюна"}) == "Kinogo Дюна"
+    assert movie_player({"action": "play", "title": "Дюна", "provider": "vk"}) == "VK Дюна"
+
+
+def test_kinogo_reports_only_confirmed_playback_and_fullscreen(monkeypatch):
+    url = vp._KINOGO_HOME + "123-dyuna.html"
+    monkeypatch.setattr(cdp, "ensure_browser", lambda **_: True)
+    status = {"paused": True, "fs": True}
+
+    def start(actual_url, fullscreen, embedded, launch, episode=None):
+        assert actual_url == url and fullscreen and embedded and episode is None
+        return status
+
+    monkeypatch.setattr(vp, "_start", start)
+    assert "пока не началось" in vp.play_kinogo(url)
+    status.update(paused=False, fs=False)
+    assert "Полный экран включить не удалось" in vp.play_kinogo(url)
+    status["fs"] = True
+    assert "во весь экран" in vp.play_kinogo(url)
+
+
+@pytest.mark.parametrize(("spoken_title", "expected_queries"), [
+    ("Бэтмен начало 2005", ["бэтмен начало", "бэтмен: начало"]),
+    ("Бэтмен. Э, начало", ["бэтмен. э, начало", "бэтмен начало", "бэтмен: начало"]),
+    ("Бэтмен. Э, начало 2005", ["бэтмен. э, начало", "бэтмен начало", "бэтмен: начало"]),
+])
+def test_kinogo_search_uses_title_and_checks_year_on_result(monkeypatch, spoken_title, expected_queries):
+    import json
+    url = vp._KINOGO_HOME + "123-batman-begins.html"
+    visited = []
+    form_queries = []
+
+    class SearchTab:
+        def navigate(self, target):
+            visited.append(target)
+
+        def wait(self, js, timeout):
+            return True
+
+        def eval(self, js, timeout=10):
+            if js == vp._KINOGO_ACCESS_DENIED:
+                return False
+            if js == vp._KINOGO_LINKS:
+                return ([{"url": url, "title": "Бэтмен: Начало (2005)"}]
+                        if form_queries[-1] == "бэтмен: начало" else [])
+            if js.startswith(vp._KINOGO_SEARCH):
+                form_queries.append(json.loads(js[len(vp._KINOGO_SEARCH) + 1:-1]))
+            return True
+
+    monkeypatch.setattr(cdp, "ensure_browser", lambda **_: True)
+    monkeypatch.setattr(cdp, "tab", SearchTab)
+    monkeypatch.setattr(vp, "_start", lambda target, **_: visited.append(target) or {"paused": False, "fs": True})
+    assert "во весь экран" in vp.play_kinogo(spoken_title)
+    assert form_queries == expected_queries
+    assert visited == [vp._KINOGO_HOME, url]
+
+
+def test_kinogo_hesitation_fallback_preserves_real_title_words():
+    assert list(vp._kinogo_search_queries("Люди в чёрном")) == [
+        ("люди в чёрном", "Люди в чёрном"),
+    ]
+    assert list(vp._kinogo_search_queries("Бэтмен. Ну, начало")) == [
+        ("бэтмен. ну, начало", "Бэтмен. Ну, начало"),
+    ]
+
+
+def test_kinogo_title_year_matches_metadata_and_rejects_wrong_year():
+    movie = vp._KINOGO_HOME + "123-batman-begins.html"
+    wrong = vp._KINOGO_HOME + "456-batman.html"
+    rows = [
+        {"url": wrong, "title": "Бэтмен: Начало", "year": "2022"},
+        {"url": movie + "#watch", "title": "Смотреть", "alternate": "Бэтмен: Начало (2005) смотреть онлайн"},
+        {"url": movie, "title": "Бэтмен: Начало / Batman Begins", "year": "2005"},
+    ]
+    assert vp._kinogo_matches("Бэтмен начало 2005", rows) == {movie}
+    assert vp._kinogo_matches("Бэтмен начало 2010", rows) == set()
+    assert vp._kinogo_matches("Бэтмен начало", rows) == {movie, wrong}
+    assert vp._film_title_year("Бегущий по лезвию 2049") == ("бегущий по лезвию 2049", None)
+
+
+def test_kinogo_tries_alternate_when_default_player_has_no_video(monkeypatch):
+    selected = []
+    clock = [0.0]
+    state = {"paused": False, "fs": True}
+    url = vp._KINOGO_HOME + "123-batman-begins.html"
+
+    class Tab:
+        def navigate(self, target):
+            assert target == url
+
+        def enable_embedded_video(self):
+            pass
+
+        def eval(self, script, timeout):
+            assert script == vp._KINOGO_ALTERNATE_PLAYER
+            selected.append(script)
+            return True
+
+    monkeypatch.setattr(vp.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(vp.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    monkeypatch.setattr(cdp, "tab", Tab)
+    monkeypatch.setattr(cdp, "pin_film_player", lambda *a, **kw: bool(selected))
+    monkeypatch.setattr(cdp, "video_js", lambda *a, **kw: state)
+    monkeypatch.setattr(cdp, "video_state", lambda *a: state)
+    monkeypatch.setattr(cdp, "bring_to_front", lambda: None)
+    monkeypatch.setattr(cdp, "fullscreen", lambda *a: True)
+    assert vp._start(url, embedded=True) == state
+    assert selected == [vp._KINOGO_ALTERNATE_PLAYER]
+
+
+def test_expired_movie_request_cannot_start_player(monkeypatch):
+    url = vp._KINOGO_HOME + "film.html"
+    launch = vp.MovieLaunch()
+
+    class Tab:
+        def navigate(self, target):
+            assert target == url
+
+        def wait(self, script, timeout):
+            launch.cancelled.set()
+            return True
+
+    monkeypatch.setattr(cdp, "tab", lambda: Tab())
+    monkeypatch.setattr(cdp, "video_js", lambda *a, **k: pytest.fail("Playback started after cancellation"))
+    with pytest.raises(TimeoutError):
+        vp._start(url, launch=launch)
+
+
+def test_embedded_video_commands_use_the_iframe_session(monkeypatch):
+    calls = []
+    messages = deque()
+    state = {"paused": False, "ready": 4, "t": 30}
+
+    class BrowserSocket:
+        def send(self, data):
+            req = json.loads(data)
+            calls.append(req)
+            method = req["method"]
+            result = {}
+            if method == "Target.setAutoAttach":
+                messages.append({"method": "Target.attachedToTarget", "params": {
+                    "targetInfo": {"targetId": "frame", "type": "iframe"}, "sessionId": "child",
+                }})
+            if method == "Page.createIsolatedWorld":
+                assert req["sessionId"] == "child" and req["params"]["frameId"] == "frame"
+                result = {"executionContextId": 7}
+            if method == "Runtime.evaluate" and req.get("sessionId") == "child":
+                assert req["params"]["contextId"] == 7
+                if "v.pause()" in req["params"]["expression"]:
+                    state["paused"] = True
+                result = {"result": {"value": dict(state)}}
+            messages.append({"id": req["id"], "result": result})
+
+        def recv(self, timeout):
+            return json.dumps(messages.popleft())
+
+    monkeypatch.setattr("websockets.sync.client.connect", lambda *a, **kw: BrowserSocket())
+    tab = cdp.Tab("ws://localhost", "top")
+    tab.enable_embedded_video()
+    assert cdp.video_state(tab)["t"] == 30
+    assert cdp.video_js("v.pause()", tab)["paused"]
+    assert calls[-1]["sessionId"] == "child"
 
 
 # ── управление на подменённом плеере ─────────────────────────────────────────
@@ -91,6 +273,52 @@ def test_controls_do_what_they_say(fake_player):
 def test_no_video_returns_empty_for_caller(monkeypatch):
     monkeypatch.setattr(cdp, "video_state", lambda t=None: None)
     assert vp.control("pause") == ""
+
+
+def test_film_loading_does_not_control_previous_video(monkeypatch):
+    monkeypatch.setattr(cdp, "video_state", lambda: pytest.fail("Read previous video during launch"))
+    with vp._movie_launch_lock:
+        assert vp.control("pause") == "Плеер фильма пока недоступен."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target, loading", [("video", False), ("auto", True)])
+async def test_film_pause_cannot_pause_spotify(monkeypatch, target, loading):
+    import main
+
+    jarvis = main.Jarvis.__new__(main.Jarvis)
+    jarvis.ui = SimpleNamespace(set_state=lambda _: None, muted=True)
+    monkeypatch.setattr(vp, "control", lambda *args: "")
+    monkeypatch.setattr(vp, "film_target_active", lambda: loading)
+    monkeypatch.setattr(main, "spotify_player", lambda **kw: pytest.fail("Spotify was called"))
+    call = SimpleNamespace(id="test", name="video_control", args={"action": "pause", "target": target})
+    result = await jarvis._execute_tool(call)
+    assert result.response["result"] == "Плеер фильма пока недоступен."
+
+
+def test_yandex_default_uses_its_own_browser_port_and_profile(monkeypatch, tmp_path):
+    from core import paths
+
+    executable = str(tmp_path / "browser.exe")
+    monkeypatch.delenv("JARVIS_BROWSER", raising=False)
+    monkeypatch.delenv("JARVIS_CDP_PORT", raising=False)
+    monkeypatch.setattr(cdp.sys, "platform", "win32")
+    monkeypatch.setattr("actions.browser_control._browser_exe",
+                        lambda name: executable if name == "yandex" else None)
+    monkeypatch.setattr(cdp, "_windows_default_browser", lambda: str(tmp_path / "msedge.exe"))
+    monkeypatch.setattr(cdp, "PORT", 9229)
+    monkeypatch.setattr(paths, "get_data_root", lambda: tmp_path)
+
+    assert cdp.browser_exe() == executable
+    assert cdp._browser_port() == 9230
+    assert os.path.basename(cdp._profile_dir()) == "browser-yandex"
+
+    explicit = tmp_path / "msedge.exe"
+    explicit.touch()
+    monkeypatch.setenv("JARVIS_BROWSER", str(explicit))
+    assert cdp.browser_exe() == str(explicit)
+    assert cdp._browser_port() == 9229
+    assert os.path.basename(cdp._profile_dir()) == "browser"
 
 
 def test_music_pause_goes_to_film_when_only_film_plays(monkeypatch, fake_player):
@@ -157,7 +385,10 @@ class _Range(http.server.SimpleHTTPRequestHandler):
 
 
 @pytest.mark.skipif(not (_chrome() and _ffmpeg()), reason="нет Chrome/Chromium или ffmpeg")
-def test_real_browser_film_flow(tmp_path, monkeypatch):
+@pytest.mark.parametrize("embedded", [False, True])
+@pytest.mark.parametrize("start_at", [0, 32])
+def test_real_browser_film_flow(tmp_path, monkeypatch, embedded, start_at):
+    monkeypatch.setattr(vp, "_FILM_MIN_SEC", 60)
     subprocess.run([_ffmpeg(), "-loglevel", "error", "-y", "-f", "lavfi", "-i",
                     "testsrc=duration=90:size=160x120:rate=5", "-f", "lavfi", "-i",
                     "sine=frequency=440:duration=90", "-c:v", "libvpx", "-b:v", "60k",
@@ -166,20 +397,31 @@ def test_real_browser_film_flow(tmp_path, monkeypatch):
         '<!doctype html><meta charset="utf-8"><title>Фильм — VK Видео</title>'
         '<div class="videoplayer"><video src="movie.webm" style="width:640px;height:360px"></video></div>'
         '<video src="movie.webm" style="width:60px;height:40px"></video>', encoding="utf-8")
+    if embedded:
+        subprocess.run([_ffmpeg(), "-loglevel", "error", "-y", "-i", str(tmp_path / "movie.webm"),
+                        "-t", "3", "-c", "copy", str(tmp_path / "preview.webm")], check=True)
     handler = lambda *a, **k: _Range(*a, directory=str(tmp_path), **k)  # noqa: E731
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    (tmp_path / "embed.html").write_text(
+        f'<iframe allowfullscreen src="http://localhost:{srv.server_address[1]}/index.html" '
+        'style="width:680px;height:400px"></iframe>'
+        '<video src="preview.webm" style="width:1400px;height:800px"></video>', encoding="utf-8")
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
     monkeypatch.setattr(cdp, "PORT", 9400 + os.getpid() % 500)
     monkeypatch.setattr(cdp, "_tab", None)
     monkeypatch.setattr(cdp, "_profile_dir", lambda: str(tmp_path / "profile"))
     monkeypatch.setenv("JARVIS_BROWSER", _chrome())
-    args = "--headless=new --mute-audio" + (" --no-sandbox" if hasattr(os, "geteuid") and os.geteuid() == 0 else "")
+    args = "--headless=new --mute-audio --disable-gpu --in-process-gpu" + (
+        " --no-sandbox" if hasattr(os, "geteuid") and os.geteuid() == 0 else "")
     monkeypatch.setenv("JARVIS_BROWSER_ARGS", args)
     try:
         assert cdp.ensure_browser(), cdp.browser_log()[-2000:]
-        st = vp._start(f"http://127.0.0.1:{srv.server_address[1]}/index.html")
+        page = "embed.html" if embedded else "index.html"
+        st = vp._start(f"http://127.0.0.1:{srv.server_address[1]}/{page}",
+                       embedded=embedded, position=start_at)
         assert st and not st["paused"] and st["fs"], st
+        assert start_at - 1 <= st["t"] < start_at + 3
         assert vp.control("seek_to", "0:45") == "Перемотал на 0:45."
         assert vp.control("seek_forward", "15 секунд").endswith("1:00.")
         assert vp.control("volume_set", "40") == "Громкость видео 40%."
@@ -188,10 +430,14 @@ def test_real_browser_film_flow(tmp_path, monkeypatch):
         assert vp.control("time").startswith("Идёт 1:00 из 1:30")
         assert vp.control("exit_fullscreen") == "Вышел из полного экрана."
         assert vp.video_playing() is False
+        if embedded:
+            cdp.tab()._film_player.eval("window.__jarvisFilm.remove()")
+            assert vp.control("resume") == ""
     finally:
         try:
             if cdp._proc:
                 cdp._proc.terminate()
+                cdp._proc.wait(timeout=5)
         finally:
             srv.shutdown()
 
@@ -274,3 +520,29 @@ def test_music_volume_changes_spotify_not_film_nor_system(monkeypatch, fake_play
 def test_film_volume_up_by_100_is_max(fake_player):
     assert vp.control("volume_up", "100") == "Громкость видео 100%."
     assert vp.control("volume_set", "пятьдесят") == "Громкость видео 50%."
+
+
+
+def test_kinogo_result_tracks_confirmed_playback_independently_of_fullscreen(monkeypatch):
+    monkeypatch.setattr(cdp, "ensure_browser", lambda **_: True)
+    url = vp._KINOGO_HOME + "film.html"
+    for state, expected in (
+        (None, "error"), ({"paused": True}, "error"),
+        ({"paused": False, "fs": False}, "partial"),
+        ({"paused": False, "fs": True}, "success"),
+    ):
+        monkeypatch.setattr(vp, "_start", lambda *a, **kw: state)
+        launch = vp.MovieLaunch()
+        vp.play_kinogo(url, launch=launch)
+        assert launch.outcome == expected
+
+
+
+def test_kinogo_selects_card_with_requested_season():
+    series = vp._KINOGO_HOME + "series.html"
+    wrong = vp._KINOGO_HOME + "first-season.html"
+    assert vp._kinogo_matches("Менталист", [
+        {"url": series, "title": "Менталист (1-7 сезон)"},
+        {"url": wrong, "title": "Менталист (1 сезон)"},
+        {"url": vp._KINOGO_HOME + "different.html", "title": "Менталистка (1-7 сезон)"},
+    ], season=3) == {series}

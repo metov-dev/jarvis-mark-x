@@ -199,3 +199,37 @@ def test_bad_calibration_is_not_saved(tmp_path, monkeypatch):
         got = wake_calibrate.run_calibration([b""], [b""], model=object())
         assert not got["saved"] and "Пока не включаю" in wake_calibrate.describe(got)
     assert wv.load_aliases() == []
+
+
+def test_command_decoder_only_emits_complete_phrases():
+    import json
+    import threading
+    from core.wake_vosk import LocalWake
+
+    emitted = threading.Event()
+    seen = []
+
+    class Recognizer:
+        def AcceptWaveform(self, frame):
+            return frame == b"end"
+        def PartialResult(self):
+            raise AssertionError("the command decoder must not use partial text")
+        def Result(self):
+            return json.dumps({"text": "джарвис громче"})
+
+    def phrase(text):
+        seen.append(text)
+        emitted.set()
+
+    def wake(_):
+        raise AssertionError("command decoder does not dispatch wake events")
+
+    ear = LocalWake(wake, recognizer_factory=Recognizer, on_phrase=phrase)
+    assert ear.start()
+    try:
+        ear.feed(b"speech")
+        ear.feed(b"end")
+        assert emitted.wait(1)
+        assert seen == ["джарвис громче"]
+    finally:
+        ear.stop()

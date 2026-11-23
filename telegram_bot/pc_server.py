@@ -275,6 +275,18 @@ async def _execute(text: str) -> dict:
             if any(k in tl for k in ["системная информация", "sysinfo", "батарея", "battery", "заряд"]):
                 return _r(await asyncio.to_thread(_get_sysinfo))
 
+        movie = _parse_movie(text)
+        if movie is not None:
+            if not movie["title"]:
+                return {**_r("Какой фильм или сериал включить?"), "ok": False}
+            if movie.get("episode") and not movie.get("season"):
+                return {**_r("Укажи номер сезона для этой серии."), "ok": False}
+            from actions.movie_player import movie_player
+            from actions.video_player import MovieLaunch
+            launch = MovieLaunch(timeout=21)
+            result = await asyncio.to_thread(movie_player, movie, launch=launch)
+            return {**_r(result), "ok": launch.outcome in ("success", "partial")}
+
         app = _known_app(tl)
         if app:
             from actions.open_app import open_app
@@ -591,6 +603,37 @@ def _get_sysinfo() -> str:
         return f"Ошибка системной информации: {e}"
 
 
+_PLAY_MOVIE = re.compile(
+    r"^(?:включи|поставь|запусти|воспроизведи|открой)\s+(фильм|сериал|кино)\b\s*(.*)$", re.I)
+_EPISODE_ORDINAL = r"(?P<number>\d{1,3})(?:\s*[-–]?\s*(?:ый|ой|ий|ая|ую|я|й))?"
+
+
+def _parse_movie(text: str) -> dict | None:
+    command = _PLAY_MOVIE.fullmatch(text.strip())
+    if command is None:
+        return None
+    title = re.sub(r"\s+(?:на|в)\s+(?:пк|компьютере|kinogo|киног[оа])\s*[.!?]*$", "",
+                   command[2], flags=re.I).strip(" .!?")
+    options = {"action": "play", "provider": "kinogo"}
+    while title:
+        for field, noun in (("season", r"сезон(?:а|е)?"), ("episode", r"(?:сери[яюи]|эпизод(?:а)?)")):
+            suffix = re.search(
+                rf"(?:^|[\s,]+(?:и\s+)?)(?:{_EPISODE_ORDINAL}\s*{noun}|{noun}\s*(?P<after>\d{{1,3}}))$",
+                               title, re.I)
+            if suffix is None:
+                continue
+            options[field] = int(suffix["number"] or suffix["after"])
+            title = title[:suffix.start()].rstrip(" ,")
+            break
+        else:
+            break
+    if command[1].casefold() == "сериал" and "episode" not in options:
+        options.setdefault("season", 1)
+        options["episode"] = 1
+    options["title"] = title.strip("«»\" ")
+    return options
+
+
 def _parse_music(tl: str) -> dict:
     if any(k in tl for k in ["stop", "стоп", "выключи", "пауза", "pause", "отключи", "замолчи", "хватит"]):
         return {"action": "pause"}
@@ -770,6 +813,7 @@ async def _handle(ws, msg: dict):
             "text": result.get("text", ""),
             "image_b64": result.get("image_b64"),
             **({"ok": result["ok"]} if "ok" in result else {}),
+            **({"unknown": True} if result.get("unknown") else {}),
             **({"data": result["data"]} if "data" in result else {}),
             "user_id": msg.get("user_id"),
         }))

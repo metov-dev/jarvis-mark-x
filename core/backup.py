@@ -141,23 +141,38 @@ def restore(src: Path, password: str, root: Path | None = None, save_keys=None,
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         names = [n for n in z.namelist() if n.startswith("data/") and _safe(n[5:])]
         keys = json.loads(z.read("api_keys.json"))
-        safety = Path(safety_dir or Path(src).parent) / f"jarvis-before-restore-{datetime.now():%Y-%m-%d-%H%M%S}"
+        if not isinstance(keys, dict) or z.testzip() is not None:
+            raise BackupError("Копия повреждена. Данные не изменены.")
+        safety = Path(safety_dir or Path(src).parent) / f"jarvis-before-restore-{datetime.now():%Y-%m-%d-%H%M%S-%f}"
         before = create(safety, password, root=root, keys=keys_now)
-        for n in names:
-            target = root / n[5:]
-            if not target.resolve().is_relative_to(root.resolve()):      # вторая стена
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            tmp = target.with_name(target.name + ".restore")
-            tmp.write_bytes(z.read(n))
-            tmp.replace(target)
-    if keys:
-        if save_keys is None:
-            from core.paths import save_api_keys as save_keys
-        save_keys(keys)
+        restored = 0
+        reason = "не удалось записать файлы"
+        try:
+            for n in names:
+                target = root / n[5:]
+                if not target.resolve().is_relative_to(root.resolve()):
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                tmp = target.with_name(target.name + ".restore")
+                tmp.write_bytes(z.read(n))
+                tmp.replace(target)
+                restored += 1
+            if keys:
+                reason = "не удалось сохранить ключи"
+                if save_keys is None:
+                    from core.paths import save_api_keys as save_keys
+                if save_keys(keys) is False:
+                    raise BackupError(reason)
+        except Exception as exc:
+            if restored:
+                _reload()
+            raise BackupError(
+                f"Восстановление прервано: {reason}. Восстановлено файлов: {restored}. "
+                f"Предыдущее состояние сохранено в «{Path(before['path']).name}»."
+            ) from exc
     _reload()
-    logger.info("Восстановлено из копии: %d файлов", len(names))
-    return {"files": len(names), "keys": sum(1 for v in keys.values() if v), "before": before["path"]}
+    logger.info("Восстановлено из копии: %d файлов", restored)
+    return {"files": restored, "keys": sum(1 for v in keys.values() if v), "before": before["path"]}
 
 
 def _reload():

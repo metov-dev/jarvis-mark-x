@@ -46,12 +46,14 @@ class TeamCollaborationEngine:
             }
         }
 
-    def _save_team_data(self):
+    def _save_team_data(self) -> bool:
         """Сохраняет данные командной работы"""
         try:
             atomic_write_json(self.team_path, self.team_data)
+            return True
         except Exception as exc:
             _logger.error("Не сохранил данные команды в %s: %s", self.team_path.name, exc)
+            return False
 
     def add_team_member(self, name: str, role: str, contact: str = ""):
         """Добавляет члена команды"""
@@ -68,8 +70,10 @@ class TeamCollaborationEngine:
                 return False
 
         self.team_data["team_members"].append(member)
-        self._save_team_data()
-        return True
+        if self._save_team_data():
+            return True
+        self.team_data["team_members"].pop()
+        return False
 
     def add_project(self, name: str, description: str = "", deadline: str = ""):
         """Добавляет проект"""
@@ -83,8 +87,10 @@ class TeamCollaborationEngine:
         }
 
         self.team_data["projects"].append(project)
-        self._save_team_data()
-        return True
+        if self._save_team_data():
+            return True
+        self.team_data["projects"].pop()
+        return False
 
     def add_task(self, project_name: str, task: str, priority: str = "medium", assignee: str = ""):
         """Добавляет задачу в проект"""
@@ -98,8 +104,10 @@ class TeamCollaborationEngine:
                     "created_at": datetime.now().isoformat()
                 }
                 project["tasks"].append(task_obj)
-                self._save_team_data()
-                return True
+                if self._save_team_data():
+                    return True
+                project["tasks"].pop()
+                return False
         return False
 
     def analyze_communication(self, communication_log: List[Dict]) -> Dict:
