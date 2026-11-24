@@ -116,7 +116,7 @@ def load_api_keys() -> dict:
             for k, v in local_data.items():
                 if k not in data or not data[k]:
                     data[k] = v
-       except Exception as e:
+        except Exception as e:
             logger.warning("Failed to load API keys from %s: %s", local_cfg, e)
 
     return data
