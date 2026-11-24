@@ -62,7 +62,7 @@ pinned: false
 ## 🚀 Установка и Быстрый старт
 
 ### Вариант 1. Установка в 1 клик для пользователей (Windows Installer)
-1. Скачайте **`JARVIS_Setup_v1.0.exe`** из раздела [Releases](https://github.com/Sardorbek505/jarvis-mark-x/releases).
+1. Скачайте **`JARVIS_Setup_v1.3.4.exe`** из раздела [Releases](https://github.com/Sardorbek505/jarvis-mark-x/releases).
 2. Запустите установщик — он создаст ярлыки на Рабочем столе и в меню «Пуск».
 3. При первом запуске откроется **Мастер настройки**:
    - Вставьте бесплатный ключ **Google Gemini API**.
