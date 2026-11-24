@@ -1,9 +1,82 @@
-# ДЖАРВИС — Зависимости
+# ДЖАРВИС - Зависимости
 # pip install -r requirements.txt
+# Серверные зависимости (Telegram Bot + Mini App): pip install -r requirements-server.txt
 
 # Ядро Gemini Live
-google-genai>=2.26.0
+google-genai>=2.26.0,<3
 
+# UI
+PyQt6>=6.6.0,<7
+Pillow>=10.0.0,<11
+
+# Файл, брошенный на капсулу: текст из PDF (core/dropped_file.py)
+pypdf>=4.0,<5
+
+# Аудио и обработка массивов
+sounddevice>=0.4.6,<1
+numpy>=1.26.0,<2
+
+# Системный мониторинг
+psutil>=5.9.0,<6
+
+# Приглушение музыки при речи и замер звука колонок (Windows CoreAudio).
+# Без них обе функции молча выключены: музыка из колонок уходит в Gemini.
+pycaw>=20240210; sys_platform == "win32"
+comtypes>=1.2,<2; sys_platform == "win32"
+
+# Веб-камера — снимок с камеры ПК (/camera)
+opencv-python>=4.8.0,<5
+
+# Vision Mode — захват экрана и определение активного окна
+mss>=9.0.0,<10
+pygetwindow>=0.0.9,<1
+
+# Movie Player — отправка клавиш в плеер (опционально, есть PowerShell fallback на Windows)
+pyautogui>=0.9.54,<1
+
+# Selenium для автоматического выбора фильмов (надёжнее чем pyautogui keyboard navigation)
+selenium>=4.15.0,<5
+webdriver-manager>=4.0.0,<5
+
+# Google Calendar API (опционально для синхронизации календаря)
+google-api-python-client>=2.100.0,<3
+google-auth-oauthlib>=1.1.0,<2
+google-auth-httplib2>=0.1.0,<1
+
+# Telegram Bridge (опционально)
+websockets>=12.0,<13
+
+# Локальное хранение истории сообщений (SQLite)
+aiosqlite>=0.19.0,<1
+
+# Облачный TTS (бесплатный нейросетевой голос Microsoft, для звонков Telegram)
+edge-tts>=7.3.1,<8
+pydub>=0.25.1,<1
+imageio-ffmpeg>=0.4.8,<1
+
+# Wake word (локальное распознавание "Джарвис" / "Jarvis")
+vosk>=0.3.45,<1
+openwakeword>=0.6.0,<1
+onnxruntime>=1.16.0,<2
+
+# Офлайн-звонки в Telegram (опционально, требует C++ Build Tools на Windows)
+# pip install py-tgcalls telethon
+# py-tgcalls==3.0.0
+
+# Шифрование (для зашифрованного локального секрета — core/secret_store.py)
+cryptography>=41,<42
+
+# Яркость экрана (опционально, Windows WMI)
+screen_brightness_control>=0.24,<1
+
+# Детектор речи (опционально, для более точного VAD)
+# torch>=2.0.0,<3
+
+# Встроенная база таймзон для Python 3.9+ на Windows (нужна zoneinfo)
+tzdata>=2024.1
+
+# Надёжное определение кодировки (опционально)
+# charset-normalizer>=3.3.0,<4
 # UI
 PyQt6>=6.6.0
 Pillow>=10.0.0
