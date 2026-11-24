@@ -57,7 +57,6 @@ def _base_dir() -> Path:
 
 
 BASE_DIR = _base_dir()
-from core.paths import CONFIG_DIR, API_FILE
 
 _DEFAULT_W, _DEFAULT_H = 1220, 800     # экраны (команды, учёба…) — внутри окна, им нужно место
 _MIN_W, _MIN_H = 960, 620
