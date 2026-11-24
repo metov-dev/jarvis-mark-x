@@ -4,11 +4,36 @@ Everything here is offline: a real MemoryStore backed by a throwaway SQLite
 file in pytest's tmp dir. No Gemini, Telegram, Neon or network.
 """
 import sys
+import types
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio
-
+try:
+    import sounddevice as _sd
+except (ImportError, OSError):
+    _sd = None
+if _sd is not None:
+    try:
+        _sd.query_devices()
+    except (OSError, _sd.PortAudioError):
+        _sd = None
+if _sd is None:
+    class _PortAudioError(Exception):
+        pass
+    sys.modules["sounddevice"] = types.SimpleNamespace(
+        PortAudioError=_PortAudioError,
+        query_devices=MagicMock(return_value=[]),
+        default=types.SimpleNamespace(device=(None, None)),
+        InputStream=MagicMock(),
+        OutputStream=MagicMock(),
+        RawInputStream=MagicMock(),
+        play=MagicMock(),
+        stop=MagicMock(),
+        wait=MagicMock(),
+    )
+    
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 

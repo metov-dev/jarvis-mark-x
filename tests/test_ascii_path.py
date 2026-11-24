@@ -1,5 +1,4 @@
 """23.11: Vosk не открывал модель из «Проекты» — «Failed to create a model»."""
-import os
 import sys
 
 import pytest

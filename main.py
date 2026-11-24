@@ -44,7 +44,6 @@ if sys.platform == "win32":
 import asyncio
 import collections
 import json
-import random
 import re
 import threading
 import time

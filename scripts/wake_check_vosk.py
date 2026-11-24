@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Модуль грузим прямо из файла: `import core.wake_vosk` тянет core/__init__.py,
 # а он — половину Джарвиса (новости, feedparser…), которой в этой проверке нет.

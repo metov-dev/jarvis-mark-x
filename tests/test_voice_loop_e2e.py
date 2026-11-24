@@ -27,7 +27,6 @@ import collections
 import socket
 from contextlib import asynccontextmanager
 import sys
-import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace

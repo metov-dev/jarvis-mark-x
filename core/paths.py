@@ -5,6 +5,8 @@
 запись пользовательских настроек в %APPDATA%/JARVIS без требования прав Администратора.
 """
 import json
+import base64
+import ctypes
 import logging
 import os
 import sys
@@ -102,20 +104,20 @@ def load_api_keys() -> dict:
     data = {}
     if user_cfg.exists():
         try:
-            data.update(json.loads(user_cfg.read_text(encoding="utf-8")))
-        except Exception:
-            pass
+            data.update(_read_api_keys_file(user_cfg))
+        except Exception as e:
+            logger.warning("Failed to load API keys from %s: %s", user_cfg, e)    
 
     # 2. Если в APPDATA чего-то нет, подмешиваем из локального config/api_keys.json
     local_cfg = get_app_dir() / "config" / "api_keys.json"
     if local_cfg.exists():
         try:
-            local_data = json.loads(local_cfg.read_text(encoding="utf-8"))
+            local_data = _read_api_keys_file(local_cfg)
             for k, v in local_data.items():
                 if k not in data or not data[k]:
                     data[k] = v
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to load API keys from %s: %s", local_cfg, e)
 
     return data
 
@@ -137,12 +139,70 @@ def save_api_keys(data: dict) -> bool:
             existing = {}
             if target.exists():
                 try:
-                    existing = json.loads(target.read_text(encoding="utf-8"))
+                    existing = _read_api_keys_file(target)
                 except Exception:
                     pass
             existing.update(data)
-            target.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+            _write_api_keys_file(target, existing)
             saved = True
         except Exception as e:
             logger.debug("Failed to write to %s: %s", target, e)
     return saved
+
+class _DATA_BLOB(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
+
+def _dpapi_crypt(data: bytes, encrypt: bool) -> bytes:
+    blob_in = _DATA_BLOB(len(data), (ctypes.c_ubyte * len(data)).from_buffer_copy(data))
+    blob_out = _DATA_BLOB()
+    fn = ctypes.windll.crypt32.CryptProtectData if encrypt else ctypes.windll.crypt32.CryptUnprotectData
+    if not fn(ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)):
+        raise ctypes.WinError()
+        res = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+        return res
+def _get_fernet():
+    from cryptography.fernet import Fernet
+    key_path = get_user_data_dir() / ".key"
+    if key_path.exists():
+        key = key_path.read_bytes().strip()
+    else:
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        key = Fernet.generate_key()
+        key_path.write_bytes(key)
+        if os.name != "nt":
+            os.chmod(key_path, 0o600)
+    return Fernet(key)
+
+def _read_api_keys_file(path: Path) -> dict:
+    raw = path.read_text(encoding="utf-8").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            enc_type = parsed.get("_enc")
+            if enc_type == "dpapi" and sys.platform == "win32":
+                decrypted = _dpapi_crypt(base64.b64decode(parsed["data"]), encrypt=False)
+                return json.loads(decrypted.decode("utf-8"))
+            if enc_type == "fernet":
+                decrypted = _get_fernet().decrypt(parsed["data"].encode("ascii"))
+                return json.loads(decrypted.decode("utf-8"))
+            return parsed
+    except json.JSONDecodeError:
+        pass
+    return {}
+
+
+def _write_api_keys_file(path: Path, data: dict) -> None:
+    payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    if sys.platform == "win32":
+        encrypted = _dpapi_crypt(payload, encrypt=True)
+        out = {"_enc": "dpapi", "data": base64.b64encode(encrypted).decode("ascii")}
+    else:
+        token = _get_fernet().encrypt(payload).decode("ascii")
+        out = {"_enc": "fernet", "data": token}
+    path.write_text(json.dumps(out, indent=2), encoding="utf-8")
+    if os.name != "nt":
+        os.chmod(path, 0o600)
+        

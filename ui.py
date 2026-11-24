@@ -42,9 +42,12 @@ _logger = logging.getLogger(__name__)
 if platform.system() == "Windows":
     import ctypes
     try:
-        ctypes.windll.shcore.SetProcessDpiAwarenessContext(1)  # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+      ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))  # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
     except (AttributeError, OSError):
-        pass  # Fail silently on older Windows versions
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+        except (AttributeError, OSError):
+            pass  # Fail silently on older Windows versions
 
 
 def _base_dir() -> Path:
@@ -54,8 +57,6 @@ def _base_dir() -> Path:
 
 
 BASE_DIR = _base_dir()
-CONFIG_DIR = BASE_DIR / "config"
-API_FILE = CONFIG_DIR / "api_keys.json"
 
 _DEFAULT_W, _DEFAULT_H = 1220, 800     # экраны (команды, учёба…) — внутри окна, им нужно место
 _MIN_W, _MIN_H = 960, 620

@@ -1,0 +1,6 @@
+# ДЖАРВИС - Серверные зависимости (Telegram Bot + Mini App / VPS)
+# pip install -r requirements-server.txt
+
+python-telegram-bot>=20.0,<21
+fastapi>=0.110.0,<1
+uvicorn[standard]>=0.27.0,<1

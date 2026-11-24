@@ -28,7 +28,8 @@ def test_destination_directory_final_path_is_checked(tmp_path):
 
 def test_directory_with_junction_inside_is_blocked(tmp_path):
     """copytree идёт по ссылкам, поэтому папка со ссылкой внутри не копируется."""
-    import subprocess, sys
+    import subprocess
+    import sys
     if sys.platform != "win32":
         import pytest
         pytest.skip("junction только на Windows")
