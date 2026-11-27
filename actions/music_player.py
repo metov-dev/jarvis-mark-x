@@ -344,6 +344,19 @@ def _get_spotify_token() -> Optional[str]:
     return None
 
 
+def _norm_words(text: str) -> list[str]:
+    return re.findall(r"[^\W_]+", (text or "").casefold().replace("ё", "е"))
+
+
+def _track_matches(query: str, item: dict) -> bool:
+    """Трек подходит, если все слова запроса есть в названии или у исполнителя."""
+    words = [w for w in _norm_words(query) if len(w) >= 2] or _norm_words(query)
+    hay = set(_norm_words(item.get("name", "")))
+    for artist in item.get("artists") or []:
+        hay |= set(_norm_words(artist.get("name", "")))
+    return bool(words) and all(w in hay for w in words)
+
+
 def _spotify_search_track_uri(query: str) -> Optional[str]:
     """
     Ищет трек через Spotify Web API и возвращает его URI (spotify:track:ID).
@@ -355,12 +368,9 @@ def _spotify_search_track_uri(query: str) -> Optional[str]:
     if not token:
         return None
 
-    query_variants = [
-        query,
-        query.replace("ё", "е"),
-        query.replace("й", "i"),
-        query.split()[0] if " " in query else query,
-    ]
+    # Без варианта «первое слово»: «не виновен» искал «не» и включал случайный
+    # трек (журнал 27.11 23:34: «Ayriliq» — Zohid).
+    query_variants = list(dict.fromkeys([query, query.replace("ё", "е")]))
 
     for variant in query_variants:
         try:
@@ -374,12 +384,10 @@ def _spotify_search_track_uri(query: str) -> Optional[str]:
                 data = json.loads(resp.read().decode())
 
             items = data.get("tracks", {}).get("items", [])
-            if items:
-                for item in items:
-                    track_name = item.get("name", "").lower()
-                    if variant.lower() in track_name or track_name in variant.lower():
-                        return item.get("uri")
-                return items[0].get("uri")
+            for item in items:
+                if _track_matches(variant, item):
+                    return item.get("uri")
+            # Совпадения нет — лучше YouTube, чем чужой первый результат.
         except urllib.error.HTTPError as exc:
             if exc.code == 403:
                 _SPOTIFY_BLOCKED_UNTIL = time.time() + 6 * 3600
