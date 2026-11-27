@@ -50,3 +50,18 @@ def test_premium_find_rejects_unrelated_top_track(monkeypatch):
     monkeypatch.setattr(sp, "_req", lambda *a, **k: type("R2", (R,), {"json": lambda self: {
         "tracks": {"items": [_item("Не виновен", "Скриптонит")]}, "artists": {"items": []}}})())
     assert sp.find("не виновен")[0] == "spotify:track:x"
+
+
+def test_started_ignores_old_paused_track_resuming(monkeypatch):
+    """28.11 00:24: стоял на паузе «Город дорог», открыли «Люби меня» — Play
+    возобновил старую, и она засчиталась как включённая."""
+    from types import SimpleNamespace as NS
+
+    from core import media_session
+    before = NS(title="Город дорог", artist="MONA", playing=False)
+    states = iter([NS(title="Город дорог", artist="MONA", playing=True)] * 3 +
+                  [NS(title="Люби меня", artist="MiyaGi", playing=True)])
+    monkeypatch.setattr(media_session, "now_playing", lambda app=None: next(states))
+    monkeypatch.setattr(media_session, "command", lambda *a, **k: True)
+    monkeypatch.setattr(M.time, "sleep", lambda s: None)
+    assert M._started(before, timeout=5).title == "Люби меня"

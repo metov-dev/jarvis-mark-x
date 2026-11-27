@@ -549,7 +549,10 @@ def _started(before, timeout: float = 8.0):
     pressed = False
     while time.monotonic() < end:
         np = media_session.now_playing("spotify")
-        if np and np.title and (before is None or np.title != before.title or not before.playing):
+        # Новое — только другое название. Раньше годилась и та же песня, если
+        # до команды она стояла на паузе: Play нажимался раньше, чем Spotify
+        # переключался, и играла старая («Люби меня» → «Город дорог», 28.11 00:24).
+        if np and np.title and (before is None or np.title != before.title):
             if np.playing:
                 return np
             if not pressed:
