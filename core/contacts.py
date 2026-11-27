@@ -79,6 +79,16 @@ def _cyr(text: str) -> str:
     return text
 
 
+def _is_owner(c: "Contact") -> bool:
+    """Контакт — это сам владелец (тот, кому звонит Джарвис)."""
+    try:
+        from core import tg_call
+        me = str(tg_call._keys().get("call_to") or "").strip().lstrip("@").lower()
+    except Exception:
+        return False
+    return bool(me) and me in {(c.telegram or "").lstrip("@").lower(), str(c.tg_id or "")}
+
+
 def _owner_name() -> str:
     try:
         from memory.memory_manager import all_facts
@@ -409,6 +419,10 @@ class Contacts:
         # Ваш Telegram подключён — звоним с него (ваших людей он знает, по id);
         # иначе — с аккаунта Джарвиса, ему нужен @username или номер.
         via = self.me if self.me.linked() else None
+        if _is_owner(c):
+            # Контакт — сам владелец: со своего Telegram себе не позвонить
+            # (UserIdInvalidError, журнал 28.11 01:36) — звонит аккаунт Джарвиса.
+            via = None
         target = f"id:{c.tg_id}" if c.tg_id and (via or not c.telegram) else c.telegram
 
         # Задание звонка: что спросить и кто это — только если есть (старые

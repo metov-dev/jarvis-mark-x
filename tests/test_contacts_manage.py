@@ -60,3 +60,19 @@ def test_message_goes_from_jarvis_account_by_default(tmp_path, monkeypatch):
     assert used == ["jarvis", "owner"]
     monkeypatch.setattr(tg_call, "ready", lambda: "Аккаунт Джарвиса для звонков не подключён")
     assert "не подключён" in api.message("мама", "Задержусь")
+
+
+def test_call_to_owner_contact_goes_via_jarvis_account(tmp_path, monkeypatch):
+    """28.11 01:36: контакт «Sardorbek» — сам владелец; звонок с его же Telegram — UserIdInvalidError."""
+    from core import tg_call
+    api = _api(tmp_path, monkeypatch)
+    api.book.upsert(CT.Contact(name="Sardorbek", telegram="@atabekovch", tg_id=1328351268))
+    monkeypatch.setattr(tg_call, "_keys", lambda: {"call_to": "atabekovch"})
+    monkeypatch.setattr(api, "precheck", lambda *a, **k: (api.book.find("Sardorbek")[0], ""))
+    monkeypatch.setattr(api.me, "linked", lambda: True)
+    calls = []
+    api.call_fn = lambda target, name, text, **kw: calls.append((target, kw.get("via"))) or "ok"
+    import threading
+    monkeypatch.setattr(threading, "Thread", lambda target, **kw: type("T", (), {"start": lambda self: target()})())
+    api.call("Sardorbek", "пора спать", urgent=True)
+    assert calls == [("@atabekovch", None)]
