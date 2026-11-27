@@ -218,6 +218,24 @@ def check_pc_link(v: dict) -> tuple[str, str]:
     return "ok", "Сервер бота на связи."
 
 
+def check_zavod(v: dict) -> tuple[str, str]:
+    key = v.get("zavod_key", "").strip()
+    url = (v.get("zavod_url", "").strip() or "https://zavod.metov.store").rstrip("/")
+    if len(key) < 20:
+        return "bad", "Ключ — в Заводе: «Настройки» → «Джарвис» → «Показать и скопировать ключ»."
+    try:
+        code, _ = _http(url + "/api/jarvis/status", {"Authorization": f"Bearer {key}"})
+    except Exception as exc:
+        return _net_error(exc)
+    if code == 200:
+        return "ok", "Завод на связи — «Джарвис, статус»."
+    if code == 401:
+        return "bad", "Завод не принял ключ — скопируйте его заново в Настройках Завода."
+    if code == 404:
+        return "warn", "Завод ещё не обновлён — выложите новую версию Завода."
+    return "warn", f"Завод ответил ошибкой {code}."
+
+
 def check_groq(v: dict) -> tuple[str, str]:
     key = clean_key(v.get("groq_api_key", ""))
     if not key.startswith("gsk_"):
@@ -321,6 +339,14 @@ SERVICES: list[Service] = [
              "Скачайте файл русской модели porcupine_params_ru.pv (ссылка в документации Porcupine).",
              "Положите .ppn и .pv в папку wake рядом с данными Джарвиса (или укажите пути) и сохраните."],
             "https://console.picovoice.ai/", check=check_wake),
+    Service("zavod", "Завод — статус всех систем", "link",
+            "«Джарвис, статус» — что горит в проектах, что сделать сегодня, кто должен. Только чтение.",
+            [Field("zavod_key", "Ключ Завода"),
+             Field("zavod_url", "Адрес Завода", secret=False, optional=True,
+                   placeholder="https://zavod.metov.store")],
+            ["Откройте Завод → «Настройки» → «Джарвис».",
+             "Нажмите «Показать и скопировать ключ» и вставьте сюда."],
+            "https://zavod.metov.store", check=check_zavod),
     Service("groq", "Groq — запасной мозг бота", "bolt",
             "Если у Gemini кончилась квота, бот в Telegram отвечает через Groq. Необязательно.",
             [Field("groq_api_key", "API-ключ", placeholder="gsk_…", env="GROQ_API_KEY")],

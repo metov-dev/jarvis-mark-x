@@ -504,6 +504,7 @@ _JUST_ANSWERED_SEC = 12.0   # живой тест 28.11: следующий во
 _WINDOW_ALLOWED_TOOLS = frozenset({
     "web_search", "weather", "location", "clock", "about_me", "football", "translation",
     "video_control", "movie_player", "music_player", "youtube_player", "recall_memory",
+    "factory_status",
 })
 _WINDOW_TRANSCRIPT_TOOLS = frozenset({"open_app", "browser", "computer_control"})
 
@@ -1731,6 +1732,18 @@ TOOLS = [
             },
             "required": ["action"]
         }
+    },
+    {
+        "name": "factory_status",
+        "description": (
+            "Статус всех проектов владельца из Завода: «Джарвис, статус», «статус всех систем», «что горит», "
+            "«что с Brona?», «что сегодня по работе», «кто должен». project — если спросили про один проект. "
+            "Доложи коротко: сначала пожары, потом задачи на сегодня и оплаты."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {
+            "project": {"type": "STRING", "description": "Один проект: Brona, Babytime, Marhamat, Smart Store…"},
+            "refresh": {"type": "BOOLEAN", "description": "Свежие данные, а не из кэша на 5 минут"},
+        }},
     },
     {
         "name": "app_window",
@@ -3348,6 +3361,10 @@ class Jarvis:
             elif name == "study":
                 from core.study import study_tool
                 result = await asyncio.to_thread(study_tool, args)
+
+            elif name == "factory_status":
+                from core.factory import factory_tool
+                result = await asyncio.to_thread(factory_tool, args)
 
             elif name == "about_me":
                 from core.about_me import about_tool
