@@ -1827,3 +1827,16 @@ async def test_followup_question_right_after_answer_runs(по_имени, monkey
         _resp(turn_complete=True),
     ], wake=False)
     assert bool(ran) is runs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool, runs", [("clock", True), ("files", False)])
+async def test_garbled_followup_runs_only_safe_tools(по_имени, monkeypatch, tool, runs):
+    """Журнал 27.11 23:48: «который час» расшифровано «кайсы», clock отклонён."""
+    по_имени.jarvis._answer_ended_at = jarvis_main.time.monotonic() - 1.0
+    ran, _ = await _late_tool_run(по_имени, monkeypatch, [
+        _resp(heard="кайсы"),
+        _tool_resp(tool, {"action": "now"}),
+        _resp(turn_complete=True),
+    ], wake=False)
+    assert bool(ran) is runs

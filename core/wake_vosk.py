@@ -97,6 +97,8 @@ def address_reason(text: str, *, followup: bool = False, final: bool = False,
                    just_answered: bool = False) -> str:
     """Определяет адресата по полному обращению или продолжению с понятной целью."""
     name, command = split_address(text, allow_alias=allow_alias)
+    # Расшифровка путает й/и в конце глагола: «открои», «закрои» (журнал 27.11 23:49).
+    command = re.sub(r"^(\w*[оа])и(?!\w)", r"\1й", command, count=1)
     if name:
         if (not command and final) or _DIRECT_REQUEST.match(command) or quick_match or confirmation:
             return "name"

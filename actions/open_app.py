@@ -34,6 +34,14 @@ _SITES = {
     "twitter": "https://x.com", "твиттер": "https://x.com",
     "kinogo": "https://kz5.kinogo-films.lol", "киного": "https://kz5.kinogo-films.lol",
 }
+def _site_for(key: str) -> str:
+    """Сайт по имени, даже с хвостом из расшифровки: «instagram говорю», «ютуб пожалуйста»."""
+    if key in _SITES:
+        return _SITES[key]
+    first = key.split()[0] if key.split() else ""
+    return _SITES.get(first, "")
+
+
 _POSSESSIVE = re.compile(r"^(?:мой|моя|моё|мое|мои|мою)\s+", re.IGNORECASE)
 _FORCE_REBUILD_SEC = 600.0
 _last_forced_rebuild = float("-inf")
@@ -76,15 +84,19 @@ def open_app(parameters: dict, response=None, player=None) -> str:
 
     # 3. Индекс программ.
     app = win_apps.find_app(key)
-    if app is None and key in _SITES:
+    site = _site_for(key)
+    if app is None and site:
         import webbrowser
-        webbrowser.open(_SITES[key])
-        return f"Открыл {_title(raw)} в браузере."
+        webbrowser.open(site)
+        return f"Открыл {_title(key.split()[0])} в браузере."
     global _last_forced_rebuild
     if app is None and time.monotonic() - _last_forced_rebuild >= _FORCE_REBUILD_SEC:
-        # Поставили только что? Полная пересборка долгая — не чаще раза в 10 минут.
+        # Поставили только что? Пересборка индекса — 30–45 с (журнал 27.11 23:50:
+        # ответ ждал её 45 с). Теперь в фоне: этот ответ — сразу, следующий найдёт.
         _last_forced_rebuild = time.monotonic()
-        app = win_apps.find_app(key, win_apps.build_index(force=True))
+        import threading
+        threading.Thread(target=win_apps.build_index, kwargs={"force": True},
+                         daemon=True, name="apps-reindex").start()
     if app:
         try:
             win_apps.launch(app)

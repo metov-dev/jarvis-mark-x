@@ -26,8 +26,20 @@ def test_site_without_app_opens_in_browser_without_rebuild(no_apps):
     assert rebuilt == []
 
 
-def test_forced_rebuild_at_most_once_per_ten_minutes(no_apps):
+def test_forced_rebuild_at_most_once_per_ten_minutes(no_apps, monkeypatch):
+    monkeypatch.setattr("threading.Thread", lambda target, kwargs, **kw: type("T", (), {"start": lambda self: target(**kwargs)})())
     _, rebuilt = no_apps
     O.open_app({"app_name": "неведомая программа"})
     O.open_app({"app_name": "неведомая программа"})
     assert rebuilt == [True]
+
+
+def test_site_with_trailing_words_and_no_blocking_rebuild(no_apps, monkeypatch):
+    """Журнал 27.11 23:50: «Открой Instagram, говорю» — 45 с пересборки и «ошибка»."""
+    opened, rebuilt = no_apps
+    assert "в браузере" in O.open_app({"app_name": "instagram говорю"})
+    assert opened == ["https://www.instagram.com"]
+    started = []
+    monkeypatch.setattr("threading.Thread", lambda **kw: type("T", (), {"start": lambda self: started.append(kw)})())
+    assert "Не нашёл" in O.open_app({"app_name": "неведомая программа"})
+    assert started and rebuilt == []                     # пересборка ушла в фон

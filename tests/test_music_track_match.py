@@ -32,3 +32,21 @@ def test_search_falls_back_to_none_without_match(monkeypatch):
     monkeypatch.setattr(M.urllib.request, "urlopen", fake_urlopen)
     assert M._spotify_search_track_uri("не виновен") is None
     assert all("q=%D0%BD%D0%B5&" not in u for u in asked)        # не искал по одному «не»
+
+
+def test_premium_find_rejects_unrelated_top_track(monkeypatch):
+    """Журнал 27.11 23:50: «не виновен» → «Take Me There», потом Madonna."""
+    from actions import spotify_premium as sp
+
+    class R:
+        def raise_for_status(self): ...
+
+        def json(self):
+            return {"tracks": {"items": [_item("Take Me There", "DA TI"), _item("La Isla Bonita", "Madonna")]},
+                    "artists": {"items": []}}
+
+    monkeypatch.setattr(sp, "_req", lambda *a, **k: R())
+    assert sp.find("не виновен") is None
+    monkeypatch.setattr(sp, "_req", lambda *a, **k: type("R2", (R,), {"json": lambda self: {
+        "tracks": {"items": [_item("Не виновен", "Скриптонит")]}, "artists": {"items": []}}})())
+    assert sp.find("не виновен")[0] == "spotify:track:x"

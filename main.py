@@ -4631,6 +4631,10 @@ class Jarvis:
         Раньше такой вызов отклонялся сразу: «Джарвис, открой хром» при
         отставшей расшифровке молча не выполнялось."""
         waiting_after_wake = time.monotonic() < self._wake_command_until
+        # Сразу после ответа Gemini понял продолжение и вызвал инструмент, а
+        # расшифровка исказилась («кайсы» вместо «который час», журнал 27.11 23:48):
+        # безопасные инструменты выполняем, как в окне после «Джарвис».
+        just_answered = time.monotonic() - self._answer_ended_at < _JUST_ANSWERED_SEC
         try:
             await asyncio.wait_for(named.wait(), 3.0 if waiting_after_wake else _TOOL_WAKE_WAIT_SEC)
         except asyncio.TimeoutError:
@@ -4640,7 +4644,8 @@ class Jarvis:
         utterance = "".join(transcript).strip()
         for allowed in (True, False):
             batch = [fc for fc in function_calls
-                     if wake_command_allows(named.is_set(), waiting_after_wake, fc.name, utterance) is allowed]
+                     if wake_command_allows(named.is_set(), waiting_after_wake or just_answered,
+                                            fc.name, utterance) is allowed]
             if batch:
                 await self._run_tool_calls(batch, allowed, utterance)
 

@@ -140,6 +140,9 @@ _KIND_WORDS = (("playlist", r"плейлист|playlist|подборк"), ("albu
                ("artist", r"^(?:песни|музык[ау]|треки)\s|исполнител"))
 
 
+_MIN_TRACK_SCORE = 75
+
+
 def find(query: str) -> tuple[str, str] | None:
     """(uri, описание) лучшего совпадения. Исполнитель — если спросили его
     («включи Любэ»), трек — если название песни совпадает лучше."""
@@ -176,7 +179,9 @@ def find(query: str) -> tuple[str, str] | None:
     a_score = fuzz.ratio(clean.lower(), art["name"].lower()) if art else 0
     if art and (forced == "artist" or (a_score >= 88 and a_score >= t_score)):
         return art["uri"], f"«{art['name']}»"
-    if best_track:
+    # Без порога включался любой первый трек: «не виновен» → «Take Me There»,
+    # потом Madonna (журнал 27.11 23:50). Нет похожего — пусть ищет YouTube.
+    if best_track and t_score >= _MIN_TRACK_SCORE:
         t, who = best_track
         return t["uri"], f"«{t['name']}» — {who}"
     return None
@@ -305,7 +310,8 @@ def play(query: str) -> str | None:
             return f"Играет {_say(np)}." if np and np["playing"] else "Продолжаю музыку."
         found = find(query)
         if not found:
-            return f"Не нашёл «{query}» в Spotify, сэр."
+            logger.info("Spotify: «%s» не нашёл — отдаю запасному пути (YouTube)", query)
+            return None
         uri, desc = found
         ok, err = play_uri(uri)
         if not ok:

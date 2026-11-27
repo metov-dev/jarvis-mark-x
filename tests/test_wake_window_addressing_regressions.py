@@ -45,3 +45,9 @@ def test_followup_rules_need_open_conversation_and_clear_request(text):
     assert not address_reason(text)
     assert not address_reason(text, followup=True, final=True)          # без «только что ответил»
     assert not address_reason("Я думаю, он прав", just_answered=True)   # не вопрос и не просьба
+
+
+def test_name_with_misspelled_verb_is_addressed():
+    """Журнал 27.11 23:49: «Jarvis, открои Instagram.» — отказ «не ко мне»."""
+    assert address_reason("Jarvis, открои Instagram.", final=True) == "name"
+    assert address_reason("Джарвис, закрои вкладку", final=True) == "name"
