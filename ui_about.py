@@ -132,6 +132,7 @@ class VoiceEnrollDialog(QDialog):
 
 class AboutDialog(QDialog):
     _voice_sig = pyqtSignal(str)
+    _check_sig = pyqtSignal(object)                 # список сомнительных полей анкеты
 
     def __init__(self, parent=None, start_voice=None, vid=None):
         super().__init__(parent)
@@ -322,6 +323,7 @@ class AboutDialog(QDialog):
         self.voice_reset.clicked.connect(self.voice_forget)
         lay.addWidget(self.voice_reset)
         self._voice_sig.connect(self._voice_msg)
+        self._check_sig.connect(self._check_done)
         self.paint_voice()
         return card
 
@@ -405,6 +407,11 @@ class AboutDialog(QDialog):
         lay.setContentsMargins(28, 12, 28, 12)
         self.status = _label("Ответы сохраняются сами. Пустое поле — Джарвис забудет.", "status")
         lay.addWidget(self.status, 1)
+        check = QPushButton("Проверить")
+        check.setCursor(Qt.CursorShape.PointingHandCursor)
+        check.setToolTip("Найти ответы наугад, ошибки и противоречия с тем, что Джарвис знает сам")
+        check.clicked.connect(self._check)
+        lay.addWidget(check)
         done = QPushButton("Готово")
         done.setObjectName("primary")
         done.setFixedWidth(120)
@@ -412,6 +419,29 @@ class AboutDialog(QDialog):
         done.clicked.connect(self.close)
         lay.addWidget(done)
         return w
+
+    def _check(self):
+        self._say("Проверяю анкету…")
+
+        def work():
+            try:
+                issues = AB.check()
+            except Exception as exc:
+                issues = [f"не получилось проверить: {exc}"]
+            self._check_sig.emit(issues)
+        threading.Thread(target=work, daemon=True, name="about-check").start()
+
+    def _check_done(self, issues: list):
+        if not issues:
+            self._say("✓  Анкета выглядит правдоподобно.")
+            return
+        import re as _re
+        lines = [_re.sub(r"\s*\(key=\w+\)", "", i) for i in issues[:6]]
+        self.status.setStyleSheet(f"color: {C.WARN};" if hasattr(C, "WARN") else "color: #e0b252;")
+        self.status.setText("Проверьте: " + " · ".join(lines) +
+                            ("" if len(issues) <= 6 else f" · ещё {len(issues) - 6}") +
+                            ". Или скажите «Джарвис, проверь мою анкету» — спросит по одному.")
+        self.status.setWordWrap(True)
 
     def _say(self, text: str):
         self.status.setStyleSheet(f"color: {C.PRI};")

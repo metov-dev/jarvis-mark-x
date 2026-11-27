@@ -1685,12 +1685,15 @@ TOOLS = [
             "музыка, новости, близкие, цели…). next — какой вопрос задать следующим; answer (key, value) — "
             "сохранить ответ, вернёт следующий вопрос; skip (key) — пропустить; later — «потом»/«хватит»; "
             "restart — «давай познакомимся», «спроси меня обо мне»; status — «что ты обо мне знаешь по "
-            "анкете». Окно — app_window window=about. Отдельные факты вне анкеты — save_to_memory."
+            "анкете»; check — «проверь мою анкету», «там всё правильно?» (найдёт шутки, ошибки и противоречия — "
+            "спроси по одному и исправь answer/clear); clear (key) — очистить поле. "
+            "Окно — app_window window=about. Отдельные факты вне анкеты — save_to_memory."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {"type": "STRING", "enum": ["next", "answer", "skip", "later", "restart", "status"]},
+                "action": {"type": "STRING", "enum": ["next", "answer", "skip", "later", "restart", "status",
+                                                      "check", "clear"]},
                 "key": {"type": "STRING", "description": "Ключ вопроса из next (name, city, wake_time…)"},
                 "value": {"type": "STRING", "description": "answer: ответ кратко, как сказал пользователь"},
             },

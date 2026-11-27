@@ -106,6 +106,14 @@ def answer(key: str, value: str, sync_now: bool = True) -> str:
     if not value:
         return forget(key)
     _mem().update_memory({q.category: {q.key: value}})
+    # Подтверждённый ответ анкеты главнее ослышки в разговоре: «имя: Сергей» из
+    # расшифровки «перейти на Сергей» (27.11) спорило с анкетой — убираем такие.
+    from core.about_check import FACT_ALIASES
+    for cat, fkey, fval in _mem().all_facts():
+        if (fkey.casefold() in FACT_ALIASES.get(key, ()) and (cat, fkey) != (q.category, q.key)
+                and fval.strip().casefold() != value.casefold()):
+            _mem().forget(cat, fkey)
+            logger.info("Обо мне: убран спорный факт %s/%s", cat, fkey)
     st = state()
     if key in st["skipped"]:
         st["skipped"].remove(key)
@@ -237,6 +245,32 @@ def intro_instruction(restart: bool = False) -> str:
     )
 
 
+def _telegram_name() -> str:
+    try:
+        from core.contacts import contacts
+        me = contacts().me
+        if not me.linked():
+            return ""
+
+        async def get(client):
+            u = await client.get_me()
+            return " ".join(x for x in (u.first_name, u.last_name) if x)
+        return me.run(get, timeout=10) or ""
+    except Exception:
+        return ""
+
+
+def check() -> list[str]:
+    """Что в анкете похоже на шутку, ошибку или спорит с тем, что Джарвис знает сам."""
+    from core import about_check, location
+    try:
+        from core.football import CLUBS
+    except Exception:
+        CLUBS = None
+    return about_check.review(answers(), _mem().all_facts(), {q.key: q.label for q in QUESTIONS},
+                              geocode=location.geocode, clubs=CLUBS, tg_name=_telegram_name())
+
+
 def about_tool(p: dict) -> str:
     p = p or {}
     a = str(p.get("action") or "status").lower()
@@ -271,6 +305,15 @@ def about_tool(p: dict) -> str:
         st["intro"], st["skipped"] = "", []
         _save_state(st)
         return ask_next("Начинаем. ")
+    if a == "check":
+        issues = check()
+        if not issues:
+            return "Анкета выглядит правдоподобно — вопросов нет."
+        return ("Проверка анкеты — сомнительно: " + "; ".join(issues) + ". Спрашивай владельца ПО ОДНОМУ "
+                "пункту своими словами; правильный ответ сохрани answer (key, value), а если поле не нужно — "
+                "clear (key). Не исправляй сам, без его ответа.")
+    if a == "clear":
+        return forget(str(p.get("key") or ""))
     if a == "status":
         have = answers()
         known, total = progress()
