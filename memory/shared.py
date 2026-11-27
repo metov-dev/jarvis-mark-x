@@ -29,6 +29,7 @@ _DIR = get_data_root() / "memory"
 OUTBOX_FILE = _DIR / "sync_outbox.json"
 SHARED_FILE = _DIR / "shared.json"
 SYNC_SEC = 60
+PULL_SEC = 1800          # без своих новостей — забрать чужие раз в 30 минут
 TELEGRAM_IN_PROMPT = 10
 TELEGRAM_MAX_AGE_H = 24
 
@@ -322,6 +323,12 @@ def _post(url: str, body: dict, headers: dict):
         return r.status_code, None
 
 
+def has_outgoing() -> bool:
+    with _lock:
+        box = _read(OUTBOX_FILE, {})
+    return any(box.get(k) for k in _KINDS)
+
+
 def start():
     if not configured():
         logger.info("Общая память с ботом не настроена (нет pc_link_url/pc_link_token) — память только на ПК")
@@ -329,7 +336,15 @@ def start():
 
     def loop():
         failures = 0
+        last = float("-inf")
         while True:
+            # Сервер (Neon free) засыпает после 5 минут тишины. Пустой обмен раз
+            # в минуту не давал ему уснуть: месячный лимит кончился 24.11.
+            # Теперь — когда есть что отправить, иначе раз в PULL_SEC.
+            if failures == 0 and not has_outgoing() and time.monotonic() - last < PULL_SEC:
+                time.sleep(SYNC_SEC)
+                continue
+            last = time.monotonic()
             try:
                 res = sync_all()
                 logger.debug("Общая память: %s", res)

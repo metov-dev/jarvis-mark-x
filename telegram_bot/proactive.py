@@ -11,6 +11,7 @@ restart won't double-send.
 """
 import asyncio
 import logging
+import time
 import re
 from datetime import datetime, timedelta
 
@@ -29,6 +30,37 @@ _EVENING = range(22, 24)   # 22:00–23:59
 _CURIOSITY = range(12, 21)  # 12:00–20:59 — one get-to-know-you question per day
 
 _CHECK_EVERY = 60  # seconds
+
+# Neon free засыпает после 5 минут тишины. Опрос базы раз в минуту не давал ей
+# уснуть, и месячный лимит кончился 24.11 (сервер отвечал 500 на всё).
+# Поэтому ответы базы помним в процессе: список пользователей — 6 часов,
+# отметки meta — 30 минут (свои записи обновляют память сразу).
+_UIDS_TTL = 6 * 3600
+_META_TTL = 30 * 60
+_uids_cache: tuple[float, list] | None = None
+_meta_cache: dict[tuple[int, str], tuple[float, object]] = {}
+
+
+async def _user_ids(memory) -> list:
+    global _uids_cache
+    now = time.monotonic()
+    if _uids_cache is None or now - _uids_cache[0] >= _UIDS_TTL:
+        _uids_cache = (now, await memory.all_user_ids())
+    return _uids_cache[1]
+
+
+async def _meta(memory, uid: int, key: str):
+    now = time.monotonic()
+    hit = _meta_cache.get((uid, key))
+    if hit is None or now - hit[0] >= _META_TTL:
+        hit = (now, await memory.get_meta(uid, key))
+        _meta_cache[(uid, key)] = hit
+    return hit[1]
+
+
+async def _set_meta(memory, uid: int, key: str, value: str):
+    await memory.set_meta(uid, key, value)
+    _meta_cache[(uid, key)] = (time.monotonic(), value)
 
 
 def _today_tasks(tasks: list, now=None) -> list:
@@ -232,7 +264,7 @@ async def _send_briefing(bot, gemini, memory, uid: int, slot: str,
 async def tick(bot, gemini, memory, default_tz: str, default_city: str = ""):
     """One scheduler pass — send any due briefings."""
     try:
-        uids = await memory.all_user_ids()
+        uids = await _user_ids(memory)
     except Exception as e:
         logger.debug(f"all_user_ids: {e}")
         return
@@ -243,27 +275,27 @@ async def tick(bot, gemini, memory, default_tz: str, default_city: str = ""):
             if now.hour not in window:
                 continue
             marker = f"briefing_{slot}"
-            if await memory.get_meta(uid, marker) == today_key:
+            if await _meta(memory, uid, marker) == today_key:
                 continue  # already sent today
             sent = await _send_briefing(bot, gemini, memory, uid, slot,
                                         default_tz, default_city)
             # Mark even on send-failure to avoid hammering a blocked chat all day
-            await memory.set_meta(uid, marker, today_key)
+            await _set_meta(memory, uid, marker, today_key)
             if sent:
                 logger.info(f"Sent {slot} briefing to {uid}")
 
         # Curiosity: one get-to-know-you question per day, daytime only, never
         # while a previous one is still unanswered, and only if not paused.
         if (now.hour in _CURIOSITY
-                and await memory.get_meta(uid, "curio_day") != today_key
-                and await memory.get_meta(uid, "curio_off") != "1"
-                and not await memory.get_meta(uid, "curio_pending")):
+                and await _meta(memory, uid, "curio_day") != today_key
+                and await _meta(memory, uid, "curio_off") != "1"
+                and not await _meta(memory, uid, "curio_pending")):
             # День отмечаем в любом случае — иначе заблокированный чат будет
             # долбиться раз в минуту до полуночи. А вот «вопрос задан» ставим
             # только после доставки: иначе несостоявшаяся отправка сжигала
             # вопрос из банка и подставляла следующую фразу пользователя как
             # ответ на него.
-            await memory.set_meta(uid, "curio_day", today_key)
+            await _set_meta(memory, uid, "curio_day", today_key)
             q = await curiosity.next_question(memory, uid)
             if q:
                 try:

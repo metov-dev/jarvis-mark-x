@@ -40,7 +40,7 @@ async def _delivery_text(r: dict, call) -> str:
     return f"🔔 Напоминание: {topic}\n(позвонить не вышло — {why})"
 
 
-async def delivery_loop(bot, memory, logger, every: float = 30.0, call=None):
+async def delivery_loop(bot, memory, logger, every: float = 30.0, call=None, recheck: float = 3600.0):
     """Одна доставка напоминаний на оба входа — бот и вебхук-сервер.
 
     Копий было две: в bot.py и в render_app.py. Сейчас они совпадали строка
@@ -62,10 +62,25 @@ async def delivery_loop(bot, memory, logger, every: float = 30.0, call=None):
             await stale()
     except Exception as e:
         logger.warning(f"Reminder claims reset: {e}")
+    import time
+    # Neon free засыпает после 5 минут тишины. Опрос базы каждые 30 с не давал
+    # ей уснуть, и месячный лимит кончился 24.11. Теперь база нужна, только
+    # когда подошёл срок ближайшего напоминания, напоминания изменились
+    # (memory.reminders_dirty) или прошёл час — на случай второго экземпляра.
+    next_due = None
+    checked = float("-inf")
     while True:
         try:
             await asyncio.sleep(every)
-            for r in await memory.get_due_reminders(now_utc_iso()):
+            now_iso = now_utc_iso()
+            dirty = getattr(memory, "reminders_dirty", True)
+            if not (dirty or time.monotonic() - checked >= recheck
+                    or (next_due is not None and next_due <= now_iso)):
+                continue
+            if hasattr(memory, "reminders_dirty"):
+                memory.reminders_dirty = False
+            checked = time.monotonic()
+            for r in await memory.get_due_reminders(now_iso):
                 # Сначала бронь: второй экземпляр бота на той же базе это
                 # напоминание уже не возьмёт (и не позвонит второй раз).
                 if claim and not await claim(r["id"]):
@@ -87,10 +102,13 @@ async def delivery_loop(bot, memory, logger, every: float = 30.0, call=None):
                     # Доставлено, но не отмечено — иначе то же напоминание
                     # придёт снова через полминуты, и так по кругу.
                     logger.error(f"Reminder mark sent (id={r['id']}): {e}")
+            nxt = getattr(memory, "next_reminder_due", None)
+            next_due = await nxt() if nxt else None
         except asyncio.CancelledError:
             break
         except Exception as e:
             logger.error(f"Reminder loop: {e}")
+            checked = time.monotonic() - recheck + 300    # база не ответила — снова через 5 мин
 
 
 def to_utc_iso(when: datetime) -> str:

@@ -122,6 +122,8 @@ class MemoryStore:
         self._pool = None          # asyncpg pool
         self._sqlite = None        # aiosqlite connection
         self._cache: dict = {}     # uid -> {"profile": {...}, "facts": [str]}
+        # Напоминания менялись — доставке пора заглянуть в базу (reminders.delivery_loop).
+        self.reminders_dirty = True
         self.degraded_reason = ""  # why Postgres is unavailable (for /memstats)
 
     @property
@@ -228,6 +230,7 @@ class MemoryStore:
             # Promoted. The SQLite handle stays open on purpose: in-flight calls
             # that already picked it must not blow up mid-query.
             self._cache.clear()
+            self.reminders_dirty = True
             # Векторы тоже: они прочитаны из ВРЕМЕННОГО хранилища, и после
             # возврата на основную базу всплывали бы в поиске как настоящие.
             from telegram_bot import memory_rag
@@ -263,6 +266,7 @@ class MemoryStore:
                 await self._sqlite.execute("UPDATE reminders SET sent=1 WHERE id=?", (rid,))
                 await self._sqlite.commit()
                 moved += 1
+            self.reminders_dirty = True
         except Exception as e:
             logger.error("Memory: перенос напоминаний из SQLite сорвался: %s", _first_line(e))
         return moved
@@ -640,6 +644,7 @@ class MemoryStore:
             "INSERT INTO reminders(user_id, text, due, sent, created_at) VALUES(?,?,?,0,?)",
             (uid, (text or "").strip(), due_utc_iso, datetime.now().isoformat()),
         )
+        self.reminders_dirty = True
         row = await self._fetchone(
             "SELECT id FROM reminders WHERE user_id=? ORDER BY id DESC LIMIT 1", (uid,)
         )
@@ -653,6 +658,11 @@ class MemoryStore:
             {"id": r[0], "user_id": r[1], "text": r[2], "due": r[3]}
             for r in rows if r[3] and r[3] <= now_utc_iso
         ]
+
+    async def next_reminder_due(self) -> Optional[str]:
+        """Срок ближайшего неотправленного напоминания (UTC ISO) или None."""
+        row = await self._fetchone("SELECT MIN(due) FROM reminders WHERE sent=0", ())
+        return row[0] if row and row[0] else None
 
     async def mark_reminder_sent(self, reminder_id: int):
         await self._exec("UPDATE reminders SET sent=1 WHERE id=?", (reminder_id,))
@@ -675,6 +685,7 @@ class MemoryStore:
     async def release_reminder(self, reminder_id: int):
         """Не доставилось — вернуть в очередь (повторится через полминуты)."""
         await self._exec("UPDATE reminders SET sent=0 WHERE id=? AND sent=2", (reminder_id,))
+        self.reminders_dirty = True
 
     async def release_stale_claims(self):
         """При запуске: брони, оставшиеся от упавшего процесса, — снова в очередь."""

@@ -142,8 +142,6 @@ hidden_imports = [
     "pycaw",
     "comtypes",
     "pyaudiowpatch",
-    "scipy",
-    "scipy.signal",
     "numpy",
     "onnxruntime",
 ]
