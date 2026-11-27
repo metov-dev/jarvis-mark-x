@@ -28,6 +28,20 @@ def check_dependencies():
     except ImportError:
         print("  [WARN] PyInstaller не найден. Устанавливаю: pip install pyinstaller...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
+    # 27.11: в .venv не было PyAudioWPatch, pypdf и др. — сборка прошла, а фильтр
+    # звука колонок молча пропал из exe. Неполное окружение — стоп до сборки.
+    dry = subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(_BASE_DIR / "requirements.txt"),
+                          "--dry-run", "--quiet", "--no-input"], capture_output=True, text=True)
+    missing = [line for line in dry.stdout.splitlines() if line.startswith("Would install")]
+    if dry.returncode != 0 or missing:
+        raise RuntimeError("окружение не совпадает с requirements.txt: "
+                           + ("; ".join(missing) or dry.stderr.strip()[-300:])
+                           + "\n  Исправить: .venv/Scripts/python.exe -m pip install -r requirements.txt")
+    print("  [OK] Все зависимости из requirements.txt установлены")
+
+
+# Нативные пакеты, без которых exe запускается, но часть функций молча пропадает.
+_REQUIRED_IN_BUNDLE = ("pyaudiowpatch", "sherpa_onnx", "vosk", "pvporcupine", "PyQt6", "imageio_ffmpeg", "winrt")
 
 
 def clean_previous_builds():
@@ -139,6 +153,9 @@ def post_build():
     dist_jarvis = _BASE_DIR / "dist" / "JARVIS"
     exe_file = dist_jarvis / "JARVIS.exe"
 
+    lost = [p for p in _REQUIRED_IN_BUNDLE if not (dist_jarvis / "_internal" / p).is_dir()]
+    if lost:
+        raise RuntimeError(f"в сборку не попали пакеты: {', '.join(lost)}")
     if exe_file.exists():
         size_mb = exe_file.stat().st_size / (1024 * 1024)
         print("\n=======================================================")
