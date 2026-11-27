@@ -182,26 +182,30 @@ def _played(st: dict | None) -> bool:
     return bool(st) and not st.get("paused", True)
 
 
-_KINOGO_HOME = "https://kz5.kinogo-films.lol/"
+_KINOGO_HOME = "https://kz6.kinogo-films.lol/"
+# Kinogo переезжает по зеркалам kzN (28.11: kz5 → kz6, проверка «это Kinogo?»
+# перестала проходить, и серии не запускались). Годится любое зеркало kzN.
+_KINOGO_HOST_RE = re.compile(r"^kz\d+\.kinogo-films\.lol$")
+_KINOGO_ORIGIN_JS = r"/^https:\/\/kz\d+\.kinogo-films\.lol$/.test(location.origin)"
 _KINOGO_HOST = urllib.parse.urlsplit(_KINOGO_HOME).hostname
 _KINOGO_ALTERNATE_PLAYER = r"""(() => {
-    if (location.origin !== __KINOGO_ORIGIN__ || document.readyState !== 'complete') return false;
+    if (!(__KINOGO_ORIGIN_OK__) || document.readyState !== 'complete') return false;
     const frame = document.querySelector('.js-player-container iframe');
     if (!frame || frame.getAttribute('src') || frame.getAttribute('data-src')) return false;
     const tab = document.querySelector('.js-player-tabs > [data-provider]:not(.current)');
     if (!tab || !tab.getClientRects().length) return false;
     tab.click();
     return true;
-})()""".replace("__KINOGO_ORIGIN__", json.dumps(_KINOGO_HOME.rstrip("/")))
+})()""".replace("__KINOGO_ORIGIN_OK__", _KINOGO_ORIGIN_JS)
 _KINOGO_SERIES_PROVIDER = r"""(() => {
-    if (location.origin !== __KINOGO_ORIGIN__) return false;
+    if (!(__KINOGO_ORIGIN_OK__)) return false;
     const frame = document.querySelector('.js-player-container iframe');
     if (frame?.getAttribute('src') && new URL(frame.src).hostname === 'bd.shizahd.pro') return true;
     const tab = [...document.querySelectorAll('.js-player-tabs > [data-provider]')]
         .find(item => item.innerText.trim() === 'ShizaHD');
     if (tab?.getClientRects().length) tab.click();
     return false;
-})()""".replace("__KINOGO_ORIGIN__", json.dumps(_KINOGO_HOME.rstrip("/")))
+})()""".replace("__KINOGO_ORIGIN_OK__", _KINOGO_ORIGIN_JS)
 _KINOGO_SERIES_FRAME = ("location.hostname === 'bd.shizahd.pro' && "
                         "Boolean(document.querySelector('.pjsplplayerscroll > pjsdiv'))")
 _KINOGO_EPISODE = r"""(([season, episode]) => {
@@ -257,7 +261,7 @@ _KINOGO_LINKS = r"""(() => Array.from(document.querySelectorAll('a[href]'), a =>
 
 def _kinogo_page(url: str) -> bool:
     parts = urllib.parse.urlsplit(url)
-    return (parts.scheme == "https" and parts.netloc == _KINOGO_HOST and
+    return (parts.scheme == "https" and bool(_KINOGO_HOST_RE.match(parts.netloc)) and
             parts.path not in ("", "/"))
 
 
@@ -577,7 +581,7 @@ def play_kinogo(title: str, player=None, launch: MovieLaunch | None = None, *,
                 return "Поиск Kinogo не загрузился. Можно указать прямую ссылку на фильм."
             if t.eval(_KINOGO_ACCESS_DENIED):
                 return "Kinogo отклонил доступ к странице. Фильм не запустился."
-            if not t.eval(f"location.origin === {json.dumps(_KINOGO_HOME.rstrip('/'))}"):
+            if not t.eval(_KINOGO_ORIGIN_JS):
                 return "Kinogo перенаправил на другой сайт. Фильм не запустился."
             if launch:
                 launch.remaining()

@@ -32,7 +32,7 @@ _SITES = {
     "chatgpt": "https://chatgpt.com", "чатгпт": "https://chatgpt.com",
     "facebook": "https://www.facebook.com", "фейсбук": "https://www.facebook.com",
     "twitter": "https://x.com", "твиттер": "https://x.com",
-    "kinogo": "https://kz5.kinogo-films.lol", "киного": "https://kz5.kinogo-films.lol",
+    "kinogo": "https://kz6.kinogo-films.lol", "киного": "https://kz6.kinogo-films.lol",
 }
 def _site_for(key: str) -> str:
     """Сайт по имени, даже с хвостом из расшифровки: «instagram говорю», «ютуб пожалуйста»."""

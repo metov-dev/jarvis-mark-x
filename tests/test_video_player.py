@@ -546,3 +546,13 @@ def test_kinogo_selects_card_with_requested_season():
         {"url": wrong, "title": "Менталист (1 сезон)"},
         {"url": vp._KINOGO_HOME + "different.html", "title": "Менталистка (1-7 сезон)"},
     ], season=3) == {series}
+
+
+def test_kinogo_any_mirror_is_kinogo():
+    """28.11: Kinogo переехал kz5 → kz6, серии перестали запускаться."""
+    from actions import video_player as v
+    assert v._kinogo_page("https://kz6.kinogo-films.lol/5059-igra-prestolov.html")
+    assert v._kinogo_page("https://kz5.kinogo-films.lol/5059-igra-prestolov.html")
+    assert not v._kinogo_page("https://kz6.kinogo-films.lol.evil.com/x")
+    assert not v._kinogo_page("https://evil.com/5059.html")
+    assert "kz\d+" in v._KINOGO_SERIES_PROVIDER and "__KINOGO" not in v._KINOGO_SERIES_PROVIDER
