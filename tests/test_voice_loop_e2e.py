@@ -1814,3 +1814,16 @@ def test_lone_wake_word_only_inside_window_and_name_like(по_имени):
     assert j._lone_wake_word("жарвоз") and j._lone_wake_word("Jarvis.")
     assert not j._lone_wake_word("привет") and not j._lone_wake_word("Да")
     assert not j._lone_wake_word("Джарвис какая погода")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ago, runs", [(1.0, True), (30.0, False)])
+async def test_followup_question_right_after_answer_runs(по_имени, monkeypatch, ago, runs):
+    """Журнал 27.11 23:31: ответил про погоду, сразу «Да, который час?» — отказ."""
+    по_имени.jarvis._answer_ended_at = jarvis_main.time.monotonic() - ago
+    ran, _ = await _late_tool_run(по_имени, monkeypatch, [
+        _resp(heard="Да, который час?"),
+        _tool_resp("clock", {"action": "now"}),
+        _resp(turn_complete=True),
+    ], wake=False)
+    assert bool(ran) is runs

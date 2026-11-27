@@ -52,13 +52,14 @@ _ADDRESS_PREFIX = re.compile(
     re.IGNORECASE,
 )
 _DIRECT_REQUEST = re.compile(
-    r"^(?:(?:ты\s+)?можешь\s+|давай\s+)?(?:сколько|который|како[йея]|кто|где|когда|почему|зачем|как|что|"
+    r"^(?:(?:ты\s+)?можешь\s+|давай\s+)?(?:сколько|который|како[йея]|кака[яю]|кто|где|когда|почему|зачем|как|что|"
     r"прибавь|убавь|сделай|включи|выключи|отключи|останови|поставь|"
     r"открой|закрой|найди|покажи|напомни|объясни|расскажи|скажи|подскажи|"
     r"запусти|продолжи|отмени|пауза|громче|тише|стоп|хватит|привет|повтори|"
     r"спасибо|помоги|перемотай|позвони|напиши|засеки|разбуди|переключи)(?:\b|$)",
     re.IGNORECASE,
 )
+_FOLLOWUP_LEAD = re.compile(r"^(?:(?:да|ну|а|и|так|слушай|ещё|еще)[,\s]+)+", re.IGNORECASE)
 _WAKE_WINDOW_FILLER = re.compile(r"^(?:э+|а+|м+|эм+|ну|так|ага|угу)$", re.IGNORECASE)
 
 
@@ -92,7 +93,8 @@ def repair_address(text: str, acoustic_name: str) -> str:
 
 def address_reason(text: str, *, followup: bool = False, final: bool = False,
                    allow_alias: bool = True, quick_match: bool = False,
-                   confirmation: bool = False, after_wake: bool = False) -> str:
+                   confirmation: bool = False, after_wake: bool = False,
+                   just_answered: bool = False) -> str:
     """Определяет адресата по полному обращению или продолжению с понятной целью."""
     name, command = split_address(text, allow_alias=allow_alias)
     if name:
@@ -108,6 +110,13 @@ def address_reason(text: str, *, followup: bool = False, final: bool = False,
             return "wake_command"
     if followup and (quick_match or confirmation):
         return "followup"
+    if just_answered:
+        # Джарвис только что договорил, и владелец сразу спрашивает дальше без
+        # имени («Да, который час?») — журнал 27.11 23:31, отказ «не ко мне».
+        # Только в первые секунды после ответа и только явный вопрос или просьба.
+        rest = _FOLLOWUP_LEAD.sub("", command).strip()
+        if _DIRECT_REQUEST.match(rest):
+            return "followup"
     return ""
 
 

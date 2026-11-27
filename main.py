@@ -494,6 +494,8 @@ _WAKE_COMMAND_SEC = 12.0
 # Сколько после конца принятой реплики ждём её вызов инструмента (лог 26.11: вызов пришёл
 # через 1–3 с после конца хода и отклонялся как «не ко мне»).
 _LATE_TOOL_SEC = 8.0
+# Сколько после конца ответа можно спросить дальше без имени (явный вопрос/просьба).
+_JUST_ANSWERED_SEC = 8.0
 
 
 # После подтверждённого wake word команда может прийти без имени в расшифровке.
@@ -1848,7 +1850,8 @@ class Jarvis:
     _intro_skipped = False                # интро пропустили — его звук больше не подаём
     _last_gemini_disconnect_notice = float("-inf")  # «нет связи» — не чаще раза в 5 минут
     _late_tool_turn: tuple[str, float] | None = None
-    _wake_cued_at = float("-inf")                 # когда прозвучал сигнал по слову «Джарвис»  # последняя принятая реплика и когда
+    _wake_cued_at = float("-inf")
+    _answer_ended_at = float("-inf")              # когда Джарвис договорил последний ответ                 # когда прозвучал сигнал по слову «Джарвис»  # последняя принятая реплика и когда
 
     def _lone_wake_word(self, text: str) -> bool:
         """Одно искажённое имя сразу после «Джарвис» («жарвоз», «Jarvis»): это зов, а не
@@ -2600,6 +2603,7 @@ class Jarvis:
             was = self._is_speaking
             self._is_speaking = value
         if was and not value:
+            self._answer_ended_at = time.monotonic()
             self._echo_guard_until = time.monotonic() + _ECHO_TAIL_SEC
             # Окно разговора отсчитывается от конца ответа, а не от начала:
             # иначе длинный ответ съедал бы его целиком. Только раз на окно.
@@ -4719,6 +4723,7 @@ class Jarvis:
             reason = address_reason(
                 text, followup=continuation, final=final, allow_alias=alias_enabled,
                 quick_match=q is not None, after_wake=time.monotonic() < self._wake_command_until,
+                just_answered=time.monotonic() - self._answer_ended_at < _JUST_ANSWERED_SEC,
                 confirmation=confirmation and
                 (_is_affirmative(command) or bool(_NO_RE.fullmatch(command.strip(" .!?")))),
             )

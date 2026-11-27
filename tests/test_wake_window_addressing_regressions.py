@@ -31,3 +31,17 @@ def test_wake_window_allows_routine_pc_actions_only_with_a_real_request():
     assert wake_command_allows(False, True, "computer_control", "Сделай яркость выше")
     assert not wake_command_allows(False, True, "files", "Открой файл")
     assert not wake_command_allows(False, True, "contacts", "Позвони Саше")
+
+
+@pytest.mark.parametrize("text", ["Да, который час?", "Который час?", "А какая погода завтра?",
+                                  "Ну открой ютуб"])
+def test_followup_question_right_after_answer_is_addressed(text):
+    """Журнал 27.11 23:31: второй вопрос сразу после ответа — отказ «не ко мне»."""
+    assert address_reason(text, followup=True, final=True, just_answered=True) == "followup"
+
+
+@pytest.mark.parametrize("text", ["Да, который час?", "ну и что он тебе сказал"])
+def test_followup_rules_need_open_conversation_and_clear_request(text):
+    assert not address_reason(text)
+    assert not address_reason(text, followup=True, final=True)          # без «только что ответил»
+    assert not address_reason("Я думаю, он прав", just_answered=True)   # не вопрос и не просьба
