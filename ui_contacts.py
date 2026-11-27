@@ -92,8 +92,62 @@ class AliasChip(QFrame):
         lay.addWidget(x)
 
 
+class PickTelegramDialog(QDialog):
+    """Выбрать галочками, кого добавить из Telegram (раньше добавлялись сразу все)."""
+
+    def __init__(self, users: list[tuple[int, str, str]], has, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Кого добавить из Telegram")
+        self.setStyleSheet(STYLE)
+        self.resize(420, 520)
+        lay = QVBoxLayout(self)
+        self.search = QLineEdit(placeholderText="Поиск по имени")
+        self.search.textChanged.connect(self._filter)
+        lay.addWidget(self.search)
+        self.list = QListWidget()
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.list.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.list.setStyleSheet(
+            f"QListWidget::item {{ padding: 6px 4px; }}"
+            f"QListWidget::indicator {{ width: 16px; height: 16px; border: 1px solid {C.TEXT_MED};"
+            f" border-radius: 4px; background: transparent; }}"
+            f"QListWidget::indicator:checked {{ background: {C.PRI}; border-color: {C.PRI}; }}")
+        for tg_id, name, tg in sorted(users, key=lambda u: (u[1] or u[2]).casefold()):
+            item = QListWidgetItem(f"{name or tg}   {tg}")
+            item.setData(Qt.ItemDataRole.UserRole, tg_id)
+            if has(tg_id, tg):
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                item.setText(item.text() + "   — уже есть")
+            else:
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Unchecked)
+            self.list.addItem(item)
+        lay.addWidget(self.list, 1)
+        row = QHBoxLayout()
+        cancel = QPushButton("Отмена")
+        cancel.clicked.connect(self.reject)
+        ok = QPushButton("Добавить выбранных")
+        ok.setObjectName("primary")
+        ok.clicked.connect(self.accept)
+        row.addStretch(1)
+        row.addWidget(cancel)
+        row.addWidget(ok)
+        lay.addLayout(row)
+
+    def _filter(self, text: str):
+        text = text.casefold().strip()
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            item.setHidden(bool(text) and text not in item.text().casefold())
+
+    def chosen(self) -> set[int]:
+        return {self.list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list.count())
+                if self.list.item(i).checkState() == Qt.CheckState.Checked}
+
+
 class ContactsDialog(QDialog):
     _done = pyqtSignal(str, str)                    # что сделано, текст
+    _picked = pyqtSignal(object)                    # контакты Telegram для выбора (или текст ошибки)
 
     def __init__(self, parent=None, api: CT.Contacts | None = None, caller_ready=None, open_keys=None):
         super().__init__(parent)
@@ -139,6 +193,7 @@ class ContactsDialog(QDialog):
         body.addLayout(right, 1)
         root.addLayout(body, 1)
         self._done.connect(self._on_done)
+        self._picked.connect(self._pick)
         self.reload()
         self.refresh_accounts()
         if self.book.contacts:
@@ -369,6 +424,11 @@ class ContactsDialog(QDialog):
         lay.setSpacing(10)
         self.status = _label("", "status")
         lay.addWidget(self.status, 1)
+        self.clear_btn = QPushButton("  Удалить все")
+        self.clear_btn.setObjectName("danger")
+        self.clear_btn.clicked.connect(self.delete_all)
+        self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        lay.addWidget(self.clear_btn)
         self.del_btn = QPushButton("  Удалить")
         self.del_btn.setObjectName("danger")
         self.del_btn.setIcon(qicon("trash", 14, C.TEXT_DIM))
@@ -510,6 +570,22 @@ class ContactsDialog(QDialog):
     def aliases_hint(c: CT.Contact) -> str:
         return (c.aliases[0] if c.aliases else c.name.split()[0]).lower()
 
+    def delete_all(self):
+        from PyQt6.QtWidgets import QMessageBox
+        n = len(self.book.contacts)
+        if not n:
+            self._say("Контактов и так нет.")
+            return
+        ask = QMessageBox.question(self, "Удалить все контакты",
+                                   f"Удалить все {n} контактов? Это нельзя отменить.")
+        if ask != QMessageBox.StandardButton.Yes:
+            return
+        self.autosave.cancel()
+        self.book.clear()
+        self.new_contact()
+        self.reload()
+        self._say(f"Удалены все контакты ({n}).")
+
     def delete_contact(self):
         self.autosave.cancel()
         if self.current and self.book.delete(self.current.id):
@@ -536,8 +612,28 @@ class ContactsDialog(QDialog):
         self._say("Подтягиваю контакты из вашего Telegram…")
 
         def work():
-            self._done.emit("import", self.api.import_from_telegram())
+            try:
+                self._picked.emit(self.api.telegram_contacts())
+            except Exception as exc:
+                self._picked.emit(f"Не получилось: {exc}")
         threading.Thread(target=work, daemon=True, name="contacts-import").start()
+
+    def _pick(self, users):
+        self.import_btn.setEnabled(self.api.me.linked())
+        if isinstance(users, str):
+            self._say(users, False)
+            return
+        if not users:
+            self._say("В Telegram нет контактов.")
+            return
+        dlg = PickTelegramDialog(users, self.api.has, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            self._say("Ничего не добавлено.")
+            return
+        ids = dlg.chosen()
+        added = self.api.add_telegram_users([u for u in users if u[0] in ids])
+        self._say(f"Добавил {added}." if added else "Никого не выбрали.", bool(added))
+        self.reload()
 
     def _on_done(self, what: str, text: str):
         self.import_btn.setEnabled(self.api.me.linked())

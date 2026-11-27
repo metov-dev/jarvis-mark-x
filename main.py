@@ -638,6 +638,7 @@ _CONFIRM_WINDOW_SEC = 90
 _DESTRUCTIVE = {
     "computer_control": ("shutdown", "restart", "reboot", "выключ", "перезагруз"),
     "files": ("delete", "remove", "удал"),
+    "contacts": ("delete_all",),
 }
 
 
@@ -664,7 +665,7 @@ def _confirm_question(name: str, args: dict) -> str:
         return f"Удалить {args['path']}?"
     if name == "forget_memory":
         return str(args.get("_confirmation_question") or "")
-    if name != "contacts":
+    if name != "contacts" or _action_of(args) not in ("message", "call"):
         return ""
     try:
         from core.contacts import contacts
@@ -696,6 +697,8 @@ def _confirm_label(name: str, args: dict) -> str:
         return "Выключить компьютер?"
     if name == "files":
         return f"Удалить {target}?" if target else "Удалить файлы?"
+    if name == "contacts" and action == "delete_all":
+        return "Удалить все контакты?"
     if name == "macro":
         return f"Запустить команду «{target}»?" if target else "Запустить свою команду?"
     return f"Выполнить {name} · {action}?"
@@ -1702,14 +1705,17 @@ TOOLS = [
             "20 минут»; as_voice — голосовым); call — «позвони брату и скажи, что ужин готов» (звонит "
             "аккаунт Джарвиса, text — что передать; urgent — если сказал «срочно»); read — «что мне "
             "написали?», «что написала мама?»; add — «добавь контакт Азиз — @aziz» (aliases — как ещё "
-            "его называет); delete; find; list. Перед отправкой и звонком система попросит "
+            "его называет); delete; delete_all — «удали все контакты»; import — «добавь из телеграма Азиза» "
+            "(name — кого; ищет в Telegram пользователя и добавляет только его); find; list. "
+            "Перед отправкой, звонком и delete_all система попросит "
             "подтверждение — переспроси ДОСЛОВНО и вызови снова только после «да». Себе в Telegram — "
             "send_to_telegram, позвонить самому пользователю — phone_call."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {"type": "STRING", "enum": ["message", "call", "read", "add", "delete", "find", "list"]},
+                "action": {"type": "STRING", "enum": ["message", "call", "read", "add", "delete", "delete_all",
+                                                      "import", "find", "list"]},
                 "name": {"type": "STRING", "description": "Кому — как назвал пользователь: «мама», «брат», «Азиз»"},
                 "text": {"type": "STRING", "description": "message: текст сообщения; call: что передать"},
                 "as_voice": {"type": "BOOLEAN"},

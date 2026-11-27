@@ -143,6 +143,14 @@ class Book:
                 return True
         return False
 
+    def clear(self) -> int:
+        """Удалить все контакты. Возвращает, сколько было."""
+        with self._lock:
+            n = len(self.contacts)
+            self.contacts = []
+            self.save()
+        return n
+
     def by_tg_id(self, tg_id: int) -> Contact | None:
         return next((c for c in self.contacts if tg_id and c.tg_id == tg_id), None)
 
@@ -415,25 +423,59 @@ class Contacts:
             parts.append(f"{name} ({n}): " + " / ".join(f"«{m[:200]}»" for m in msgs))
         return "Непрочитанные: " + "; ".join(parts) + "."
 
-    def import_from_telegram(self) -> str:
+    def telegram_contacts(self) -> list[tuple[int, str, str]]:
+        """Контакты из Telegram владельца: (id, имя, @username или +номер). Ничего не добавляет."""
         async def fetch(client):
             from telethon.tl.functions.contacts import GetContactsRequest
             res = await client(GetContactsRequest(hash=0))
             return [(u.id, " ".join(x for x in (u.first_name, u.last_name) if x) or (u.username or ""),
                      ("@" + u.username) if u.username else ("+" + u.phone if u.phone else ""))
                     for u in res.users if not getattr(u, "bot", False) and not getattr(u, "deleted", False)]
-        try:
-            users = self.me.run(fetch, timeout=60)
-        except Exception as exc:
-            return f"Не получилось: {exc}"
+        return self.me.run(fetch, timeout=60)
+
+    def has(self, tg_id: int, tg: str) -> bool:
+        return bool(self.book.by_tg_id(tg_id) or
+                    (tg and any(c.telegram.lower() == tg.lower() for c in self.book.contacts)))
+
+    def add_telegram_users(self, users: list[tuple[int, str, str]]) -> int:
         added = 0
         for tg_id, name, tg in users:
-            if self.book.by_tg_id(tg_id) or (tg and any(c.telegram.lower() == tg.lower() for c in self.book.contacts)):
+            if self.has(tg_id, tg):
                 continue
             self.book.contacts.append(Contact(name=name or tg, telegram=tg, tg_id=tg_id))
             added += 1
         self.book.save()
+        return added
+
+    def import_from_telegram(self, only: set[int] | None = None) -> str:
+        """Добавить из Telegram — всех или только выбранных (only — их id)."""
+        try:
+            users = self.telegram_contacts()
+        except Exception as exc:
+            return f"Не получилось: {exc}"
+        if only is not None:
+            users = [u for u in users if u[0] in only]
+        added = self.add_telegram_users(users)
         return f"Добавил {added} из {len(users)} контактов Telegram." if users else "В Telegram нет контактов."
+
+    def add_from_telegram(self, spoken: str) -> str:
+        """«Добавь из телеграма Азиза» — только этого человека."""
+        if not spoken.strip():
+            return "Кого добавить из Telegram? Или выберите галочками в окне «Контакты»."
+        try:
+            users = self.telegram_contacts()
+        except Exception as exc:
+            return f"Не получилось: {exc}"
+        want = _stems(spoken)
+        found = [u for u in users if want and set(want) <= set(_stems(u[1] + " " + u[2].lstrip("@+")))]
+        if not found:
+            return f"В вашем Telegram нет «{spoken}»."
+        if len(found) > 1:
+            return "Нашёл несколько: " + ", ".join(u[1] or u[2] for u in found[:6]) + ". Кого именно?"
+        if self.has(found[0][0], found[0][2]):
+            return f"«{found[0][1] or found[0][2]}» уже в контактах."
+        self.add_telegram_users(found)
+        return f"Добавил «{found[0][1] or found[0][2]}» из Telegram."
 
     def describe(self) -> str:
         if not self.book.contacts:
@@ -559,6 +601,11 @@ def contacts_tool(p: dict, done: Callable[[str], None] | None = None) -> str:
             return problem
         c.book.delete(con.id)
         return f"Удалил контакт «{con.name}»."
+    if a == "delete_all":
+        n = c.book.clear()
+        return f"Удалил все контакты ({n})." if n else "Контактов и так нет."
+    if a == "import":
+        return c.add_from_telegram(who)
     if a == "find":
         found = c.book.find(who)
         return ("Нашёл: " + ", ".join(x.label() for x in found)) if found else f"«{who}» нет в контактах."
