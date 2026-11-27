@@ -73,7 +73,14 @@ def _clean_title(title: str) -> str:
     title = _SITE_TAIL.sub("", title).strip(" -—|–")
     while _NOISE_HEAD.search(title):
         title = _NOISE_HEAD.sub("", title, count=1)
-    return title.strip()[:120]
+    return _safe(title)
+
+
+def _safe(text: str) -> str:
+    """Заголовок задаёт сайт — это недоверенные данные. Только буквы, цифры и
+    простая пунктуация, без кавычек, скобок-разметки и управляющих символов."""
+    text = re.sub(r"[^\w\s.,:!?()'-]", " ", text or "")
+    return re.sub(r"\s+", " ", text).strip()[:80]
 
 
 def from_window(snapshot: dict) -> "Activity | None":
@@ -106,7 +113,8 @@ def from_media(media, window_title: str = "") -> Activity | None:
     if not title:
         return None
     season, episode = _episode(media.title, window_title)
-    return Activity(_kind(media.app), media.app or "", title, (media.artist or "")[:80], season, episode)
+    return Activity(_kind(media.app), _safe(media.app or "")[:40], title, _safe(media.artist or "")[:60],
+                    season, episode)
 
 
 class ActivityTracker:
