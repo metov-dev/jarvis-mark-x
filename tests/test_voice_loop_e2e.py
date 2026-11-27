@@ -1667,7 +1667,9 @@ async def test_post_wake_accepts_one_non_quick_speech_turn(по_имени, monk
     request = "Открой рабочую вкладку с расписанием"
     session = _ToolSession([
         *first,
-        _resp(heard="он открывал это вчера", turn_complete=True),
+        # После сигнала любая содержательная фраза — к Джарвису (просьба владельца 26.11);
+        # окно не закрывает только междометие.
+        _resp(heard="угу", turn_complete=True),
         _tool_resp("browser"),
         _resp(heard=request, turn_complete=True),
         _resp(heard="Открой другую вкладку"),

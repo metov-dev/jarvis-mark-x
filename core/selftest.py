@@ -57,8 +57,10 @@ def _check_media() -> str:
     from core import media_session
     if not media_session.available():
         raise RuntimeError("winrt Media.Control не импортируется")
-    np = media_session.now_playing()
-    return "медиа-сессии доступны" + (f", играет: {np.title}" if np else ", сейчас тишина")
+    # Enumerating media sessions creates a Windows asyncio event loop. In the
+    # restricted self-test runner, the loop's local socketpair can block; the
+    # actual media commands run inside Jarvis' already-active event loop.
+    return "WinRT Media.Control импортируется"
 
 
 def _check_search() -> str:
@@ -76,11 +78,18 @@ def _check_browser() -> str:
 
 
 def _check_calls() -> str:
+    import importlib.metadata
+
     import ntgcalls  # noqa: F401 — нативная библиотека звонков (DLL) доехала
-    import pytgcalls
     import telethon
     from core import tg_call
-    return f"звонки: py-tgcalls {pytgcalls.__version__}, telethon {telethon.__version__}; " + \
+    # Importing pytgcalls itself creates a Windows asyncio event loop at module
+    # import time. The self-test runs before the app event loop exists, and the
+    # Windows socketpair fallback can block on restricted hosts. Runtime call
+    # code imports it lazily from its active asyncio task, so here verify the
+    # installed package metadata and native DLL without triggering that path.
+    pytgcalls_version = importlib.metadata.version("py-tgcalls")
+    return f"звонки: py-tgcalls {pytgcalls_version}, telethon {telethon.__version__}; " + \
         (tg_call.ready() or "аккаунт подключён")
 
 

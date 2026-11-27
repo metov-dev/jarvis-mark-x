@@ -44,7 +44,6 @@ if sys.platform == "win32":
 import asyncio
 import collections
 import json
-import random
 import re
 import threading
 import time
@@ -494,18 +493,26 @@ _WAKE_TRANSCRIPT_SEC = 10.0
 _WAKE_COMMAND_SEC = 12.0
 
 
-# Окно после «Джарвис» (имя в расшифровке исказилось) разрешает только безопасные инструменты:
-# вопросы, время, видео и музыка. Всё остальное — файлы, настройки, звонки, приложения — требует
-# имени в расшифровке (23.11 23:33: Gemini сам вызвал brightness_set при пустой расшифровке).
+# После подтверждённого wake word команда может прийти без имени в расшифровке.
+# Разрешаем разговор и обычные действия с браузером/ПК; файлы, звонки и
+# необратимые операции по-прежнему требуют отдельной проверки/подтверждения.
 _WINDOW_ALLOWED_TOOLS = frozenset({
     "web_search", "weather", "location", "clock", "about_me", "football", "translation",
     "video_control", "movie_player", "music_player", "youtube_player", "recall_memory",
 })
+_WINDOW_TRANSCRIPT_TOOLS = frozenset({"open_app", "browser", "computer_control"})
 
 
-def wake_command_allows(name_in_transcript: bool, wake_window_open: bool, tool: str = "") -> bool:
-    """Вызов допустим, если имя есть в расшифровке, или команда пришла в окне после «Джарвис» (только из списка)."""
-    return name_in_transcript or (wake_window_open and tool in _WINDOW_ALLOWED_TOOLS)
+def wake_command_allows(name_in_transcript: bool, wake_window_open: bool, tool: str = "",
+                        heard: str = "") -> bool:
+    """Проверяет адресацию вызова и требует текст команды для действий с ПК."""
+    if name_in_transcript or (wake_window_open and tool in _WINDOW_ALLOWED_TOOLS):
+        return True
+    # Открытие приложений и обычные настройки ПК принимаем только при наличии
+    # распознанной, содержательной реплики. Пустой вызов модели после одного
+    # сигнала активации не должен менять громкость/яркость сам по себе.
+    return bool(wake_window_open and tool in _WINDOW_TRANSCRIPT_TOOLS
+                and address_reason(heard, after_wake=True) == "wake_command")
 
 _MISHEARD_WAKE_PREFIX = re.compile(r"^\s*чарыс(?=[\s,.!?])[,\s.!?]+", re.IGNORECASE)
 # Старую настройку 0 сохраняем как отключение сигнала пробуждения.
@@ -1836,6 +1843,7 @@ TOOLS = [
 class Jarvis:
     _go_away_at: float | None = None      # Gemini прислал GoAway — переподключение плановое
     _intro_skipped = False                # интро пропустили — его звук больше не подаём
+    _last_gemini_disconnect_notice = float("-inf")  # «нет связи» — не чаще раза в 5 минут
 
     def __init__(self, ui: JarvisUI):
         self.ui = ui
@@ -1866,6 +1874,7 @@ class Jarvis:
         from core.echo_gate import EchoGate
         self._echo = EchoGate()       # голос или эхо колонок (учится на ходу, помнит комнату)
         self._resume_handle: str | None = None  # возобновление сессии после разрыва
+        self._last_gemini_disconnect_notice = float("-inf")
 
         # Новый мозг ДЖАРВИС
         self.user_profile = UserProfile(DATA_DIR)
@@ -1890,6 +1899,8 @@ class Jarvis:
         self._wake_command_until = 0.0
         self._last_movie_request = None
         self._last_movie_until = 0.0
+        self._movie_context_path = DATA_DIR / "recent_movie.json"
+        self._restore_recent_movie()
         self._playback_reference = None
         self._reference_check = (os.getenv("JARVIS_PLAYBACK_REFERENCE", "0") == "1"
                                  or "--voice-preview" in sys.argv)
@@ -2075,7 +2086,7 @@ class Jarvis:
             logger.warning("Часы не запустились: %s", exc)
 
         from core.dialog_context import WorkContext
-        self._work_context = WorkContext()
+        self._work_context = WorkContext(DATA_DIR / "desktop_context.json")
         self._stop_initiative_observer = threading.Event()
         threading.Thread(target=self._observe_initiative, daemon=True,
                          name="desktop-context").start()
@@ -2471,6 +2482,34 @@ class Jarvis:
         if time.monotonic() < getattr(self, "_last_movie_until", 0.0):
             return self._last_movie_request
         return None
+
+    def _restore_recent_movie(self):
+        """Восстанавливает короткий контекст последнего фильма после перезапуска."""
+        try:
+            from core.storage import safe_read_json
+            saved = safe_read_json(self._movie_context_path, default={})
+            request = saved.get("request") if isinstance(saved, dict) else None
+            saved_at = saved.get("saved_at") if isinstance(saved, dict) else None
+            age = time.time() - saved_at if type(saved_at) in (int, float) else -1
+            if (isinstance(request, dict) and request.get("action") == "play"
+                    and request.get("provider") in {"kinogo", "youtube"}
+                    and isinstance(request.get("title"), str) and request["title"].strip()
+                    and 0 <= age < 300):
+                self._last_movie_request = request
+                self._last_movie_until = time.monotonic() + (300 - age)
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning("Контекст последнего фильма не восстановлен: %s", exc)
+
+    def _remember_movie_request(self, args: dict):
+        request = {key: args[key] for key in ("action", "provider", "title", "season", "episode")
+                   if key in args}
+        self._last_movie_request = request
+        self._last_movie_until = time.monotonic() + 300
+        try:
+            from core.storage import atomic_write_json
+            atomic_write_json(self._movie_context_path, {"request": request, "saved_at": time.time()})
+        except OSError as exc:
+            logger.warning("Контекст последнего фильма не сохранён: %s", exc)
 
     def _match_voice_quick(self, text: str):
         text = self._repair_voice_address(text)
@@ -2985,12 +3024,12 @@ class Jarvis:
                     result, outcome = "Какой фильм поставить, сэр?", "error"
                 elif _action_of(args) == "play" and args.get("provider") == "youtube":
                     from actions.video_player import play_youtube
-                    self._last_movie_request, self._last_movie_until = dict(args), time.monotonic() + 300
+                    self._remember_movie_request(args)
                     result = await asyncio.to_thread(play_youtube, title, "", self.ui)
                 else:
                     from actions.video_player import MovieLaunch
                     if _action_of(args) == "play":
-                        self._last_movie_request, self._last_movie_until = dict(args), time.monotonic() + 300
+                        self._remember_movie_request(args)
                     launch = MovieLaunch(timeout=_TOOL_TIMEOUT_SEC - 2)
                     try:
                         r = await loop.run_in_executor(
@@ -4566,7 +4605,7 @@ class Jarvis:
         utterance = "".join(transcript).strip()
         for allowed in (True, False):
             batch = [fc for fc in function_calls
-                     if wake_command_allows(named.is_set(), waiting_after_wake, fc.name) is allowed]
+                     if wake_command_allows(named.is_set(), waiting_after_wake, fc.name, utterance) is allowed]
             if batch:
                 await self._run_tool_calls(batch, allowed, utterance)
 
@@ -5286,8 +5325,10 @@ class Jarvis:
                 # бился бы в него бесконечно. Со второй неудачи — чистый старт.
                 if failures >= 2:
                     self._resume_handle = None
-                if failures == 3:
+                now = time.monotonic()
+                if failures == 3 and now - self._last_gemini_disconnect_notice >= 300:
                     self.ui.write_log("SYS: нет связи с Gemini — продолжаю попытки…")
+                    self._last_gemini_disconnect_notice = now
                 if any(k in low for k in _QUOTA_WORDS):
                     self.ui.write_log(f"SYS: 😵 Слишком много запросов: Gemini просит паузу — "
                                       f"вернусь через {delay:.0f} с")

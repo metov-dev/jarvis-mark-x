@@ -1636,8 +1636,8 @@ async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         note = f"[Документ {doc.file_name or ''}] {summary[:600]}"
         await memory.add_note(user_id, note)
         asyncio.create_task(memory_rag.index(memory, gemini, user_id, "document", note))
-    except Exception as e:
-        logger.error(f"handle_document error: {e}")
+    except Exception:
+        logger.exception("handle_document error")
         await msg.reply_text("❌ Не смог обработать документ.")
 
 
@@ -1742,8 +1742,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not failed:     # сообщение о сбое — не реплика, в память не пишем
             asyncio.create_task(memory.observe(user_id, gemini, text, reply))
             asyncio.create_task(_persist_exchange(user_id, text, reply))
-    except Exception as e:
-        logger.error(f"handle_text error: {e}")
+    except Exception:
+        logger.exception("handle_text error")
         await update.effective_message.reply_text("❌ Что-то пошло не так. Попробуй ещё раз.")
 
 
@@ -1828,8 +1828,8 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if transcript and not failed:
                 asyncio.create_task(memory.observe(user_id, gemini, transcript, reply))
                 asyncio.create_task(_persist_exchange(user_id, transcript, reply))
-    except Exception as e:
-        logger.error(f"handle_voice error: {e}")
+    except Exception:
+        logger.exception("handle_voice error")
         await msg.reply_text("❌ Не смог обработать голосовое.")
 
 
@@ -1844,8 +1844,8 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         caption = update.effective_message.caption or ""
         reply = await gemini.chat_with_image(update.effective_user.id, image, caption)
         await update.effective_message.reply_text(reply)
-    except Exception as e:
-        logger.error(f"handle_photo error: {e}")
+    except Exception:
+        logger.exception("handle_photo error")
         await update.effective_message.reply_text("❌ Не смог обработать фото.")
 
 

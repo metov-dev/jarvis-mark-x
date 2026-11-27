@@ -59,6 +59,7 @@ _DIRECT_REQUEST = re.compile(
     r"спасибо|помоги|перемотай|позвони|напиши|засеки|разбуди|переключи)(?:\b|$)",
     re.IGNORECASE,
 )
+_WAKE_WINDOW_FILLER = re.compile(r"^(?:э+|а+|м+|эм+|ну|так|ага|угу)$", re.IGNORECASE)
 
 
 def split_address(text: str, *, allow_alias: bool = True) -> tuple[str, str]:
@@ -98,8 +99,13 @@ def address_reason(text: str, *, followup: bool = False, final: bool = False,
         if (not command and final) or _DIRECT_REQUEST.match(command) or quick_match or confirmation:
             return "name"
         return ""
-    if after_wake and (quick_match or _DIRECT_REQUEST.match(command)):
-        return "wake_command"
+    if after_wake:
+        # Локальный детектор уже подтвердил обращение. После сигнала человек
+        # может задать вопрос или описать задачу любой формулировкой; прежний
+        # whitelist глаголов молча выбрасывал такие реплики как «не ко мне».
+        content = re.sub(r"[^\wё]+", "", command.casefold())
+        if len(content) >= 2 and not _WAKE_WINDOW_FILLER.fullmatch(content):
+            return "wake_command"
     if followup and (quick_match or confirmation):
         return "followup"
     return ""

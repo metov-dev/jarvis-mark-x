@@ -524,6 +524,10 @@ _FILM_HESITATION = re.compile(r"[,.;!?…—]\s*(?:э+|эм+|м{2,})\s*(?:[,.;!?
 def _kinogo_search_queries(title: str):
     # Keep the original first: punctuation or a hesitation-like syllable may belong to a title.
     cleaned = _FILM_HESITATION.sub(" ", title).strip()
+    # ASR often omits punctuation around a spoken hesitation ("Бэтмен э начало").
+    # Keep that as a fallback query rather than searching the filler as part of the title.
+    cleaned = re.sub(r"(?i)(?<!\w)(?:э{1,3}|эм+|м-м)(?!\w)", " ", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
     seen = set()
     for candidate in dict.fromkeys((title, cleaned)):
         if not candidate:

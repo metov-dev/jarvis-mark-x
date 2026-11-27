@@ -23,6 +23,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -232,17 +233,46 @@ def desktop_context() -> dict:
 
 
 class WorkContext:
-    """Последнее видимое рабочее окно. Данные остаются в памяти процесса."""
+    """Последнее видимое рабочее окно; локальная закладка живёт до часа."""
 
-    def __init__(self):
+    def __init__(self, path: Path | None = None):
         self._lock = threading.Lock()
         self._last: tuple[str, float] | None = None
+        self._path = Path(path) if path else None
+        self._last_saved_at = 0.0
+        if self._path:
+            try:
+                from core.storage import safe_read_json
+                saved = safe_read_json(self._path, default={})
+                title = saved.get("title") if isinstance(saved, dict) else None
+                saved_at = saved.get("saved_at") if isinstance(saved, dict) else None
+                age = time.time() - saved_at if type(saved_at) in (int, float) else -1
+                if isinstance(title, str) and title.strip() and 0 <= age <= 3600:
+                    self._last = (title.strip(), time.monotonic() - age)
+                    self._last_saved_at = float(saved_at)
+            except (OSError, TypeError, ValueError) as exc:
+                logger.warning("Рабочий контекст не восстановлен: %s", exc)
 
     def observe(self, snapshot: dict, now: float) -> None:
         title = snapshot.get("window", "").strip()
         if title and snapshot.get("application", "").casefold() in _WORK_APPS:
+            saved_at = time.time()
+            persist = False
             with self._lock:
+                changed = self._last is None or self._last[0] != title
                 self._last = (title, now)
+                persist = self._path is not None and (
+                    changed or saved_at - self._last_saved_at >= 30
+                    or not self._path.exists()
+                )
+                if persist:
+                    self._last_saved_at = saved_at
+            if persist:
+                try:
+                    from core.storage import atomic_write_json
+                    atomic_write_json(self._path, {"title": title, "saved_at": saved_at})
+                except OSError as exc:
+                    logger.warning("Рабочий контекст не сохранён: %s", exc)
 
     def describe(self, now: float) -> str:
         with self._lock:

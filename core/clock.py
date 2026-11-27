@@ -223,10 +223,12 @@ class Clock:
             timers = [Timer(**t) for t in d.get("timers", [])]
             alarms = [Alarm(**a) for a in d.get("alarms", [])]
             stopwatch = Stopwatch(**d.get("stopwatch", {}))
-            if stopwatch.started:
-                # Старый формат не содержит времени последней записи секундомера.
+            if stopwatch.started and d.get("stopwatch_continues") is not True:
+                # Старый формат хранил только последнее накопленное значение.
                 stopwatch.elapsed = max([stopwatch.elapsed, *stopwatch.laps])
                 stopwatch.started = 0.0
+            # Новый формат сохраняет базу и отметку старта отдельно. Лапы уже
+            # включают базу, поэтому max(laps) здесь удвоил бы время.
             latest_id = max((record.id for record in [*timers, *alarms]), default=0)
             self._next_id = max(int(d.get("next_id", 1)), latest_id + 1)
             self.timers, self.alarms, self.stopwatch = timers, alarms, stopwatch
@@ -238,9 +240,11 @@ class Clock:
             return
         saved_at = self.now()
         stopwatch = asdict(self.stopwatch)
-        stopwatch.update(started=0.0, elapsed=self.stopwatch.value(saved_at))
+        # Сохраняем стартовую отметку: если процесс аварийно завершится, после
+        # перезапуска секундомер продолжит считать время. Штатный stop() ниже
+        # фиксирует значение и очищает started.
         data = {"timers": [asdict(t) for t in self.timers], "alarms": [asdict(a) for a in self.alarms],
-                "stopwatch": stopwatch, "next_id": self._next_id}
+                "stopwatch": stopwatch, "stopwatch_continues": True, "next_id": self._next_id}
         try:
             atomic_write_json(self.path, data)
         except OSError as exc:
