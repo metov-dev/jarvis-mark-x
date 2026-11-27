@@ -327,3 +327,24 @@ def test_confirmed_playback_still_answers(monkeypatch):
     monkeypatch.setattr(sp.time, "sleep", lambda s: None)
 
     assert sp.play("трек") == "Включил «Трек» — Кто-то."
+
+
+def test_rejected_refresh_token_pauses_network(monkeypatch, tmp_path):
+    """Лог 27.11: мёртвый refresh-токен — 2 запроса к Spotify на каждую проверку плеера."""
+    from tools.spotify import auth as A
+    calls = []
+
+    class _Resp:
+        status_code = 400
+
+        def raise_for_status(self):
+            raise A.requests.HTTPError("400 Bad Request")
+
+    monkeypatch.setattr(A.requests, "post", lambda *a, **k: calls.append(1) or _Resp())
+    a = A.SpotifyAuth.__new__(A.SpotifyAuth)
+    a.client_id = a.client_secret = "x"
+    a.refresh_token, a.seed_refresh_token = "dead", "dead-too"
+    a.access_token, a.token_expiry = None, None
+    assert a.get_access_token() is None
+    assert a.get_access_token() is None
+    assert len(calls) == 2                     # второй вызов — без сети

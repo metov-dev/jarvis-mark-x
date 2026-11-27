@@ -19,6 +19,9 @@ _logger = logging.getLogger(__name__)
 
 # Обновляем токен заранее, чтобы он не истёк посреди запроса
 _REFRESH_MARGIN_SEC = 30
+# Spotify отверг refresh-токен — не спрашивать снова каждую проверку плеера
+# (2 запроса до 10 с каждый, лог 27.11). Новый вход сбрасывает паузу.
+_DEAD_TOKEN_PAUSE_SEC = 1800
 
 
 def _token_path(for_writing: bool = False) -> str:
@@ -107,6 +110,7 @@ class SpotifyAuth:
             token_data = response.json()
             self.access_token = token_data['access_token']
             self.refresh_token = token_data['refresh_token']
+            self._dead_until = 0.0                    # новый вход — пауза снята
             expires_in = token_data.get('expires_in', 3600)
             self.token_expiry = time.time() + expires_in
             
@@ -122,6 +126,7 @@ class SpotifyAuth:
         Set refresh token directly (for initial setup).
         """
         self.refresh_token = refresh_token
+        self._dead_until = 0.0
         self._save_tokens()
     
     def refresh_access_token(self) -> bool:
@@ -134,16 +139,28 @@ class SpotifyAuth:
         if not self.refresh_token:
             print("[SpotifyAuth] No refresh token available")
             return False
+        if time.time() < getattr(self, "_dead_until", 0.0):
+            return False
 
         if self._request_refresh(self.refresh_token):
             return True
 
         seed = (self.seed_refresh_token or "").strip()
         if not seed or seed == self.refresh_token:
+            self._pause_if_rejected()
             return False
 
         _logger.warning("Refresh-токен из хранилища мёртв, пробую токен из ключей")
-        return self._request_refresh(seed)
+        if self._request_refresh(seed):
+            return True
+        self._pause_if_rejected()
+        return False
+
+    def _pause_if_rejected(self):
+        if getattr(self, "_last_refresh_status", None) in (400, 401):
+            self._dead_until = time.time() + _DEAD_TOKEN_PAUSE_SEC
+            _logger.warning("Spotify отверг вход — нужен новый вход; повтор через %d мин",
+                            _DEAD_TOKEN_PAUSE_SEC // 60)
 
     def _request_refresh(self, refresh_token: str) -> bool:
         data = {
@@ -155,6 +172,7 @@ class SpotifyAuth:
 
         try:
             response = requests.post(self.TOKEN_URL, data=data, timeout=(3, 10))
+            self._last_refresh_status = response.status_code
             response.raise_for_status()
 
             token_data = response.json()
