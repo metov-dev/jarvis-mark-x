@@ -4644,8 +4644,9 @@ class Jarvis:
         utterance = "".join(transcript).strip()
         for allowed in (True, False):
             batch = [fc for fc in function_calls
-                     if wake_command_allows(named.is_set(), waiting_after_wake or just_answered,
-                                            fc.name, utterance) is allowed]
+                     if (wake_command_allows(named.is_set(), waiting_after_wake, fc.name, utterance)
+                         # После ответа — только безопасные инструменты, без управления ПК.
+                         or (just_answered and fc.name in _WINDOW_ALLOWED_TOOLS)) is allowed]
             if batch:
                 await self._run_tool_calls(batch, allowed, utterance)
 
