@@ -666,8 +666,13 @@ class Clock:
     def stop(self):
         self._stop.set()
         with self._lock:
-            if self.stopwatch.started:
-                self.sw_stop()
+            if self.stopwatch.started and self.path:
+                # Секундомер идёт и после закрытия Джарвиса (просьба владельца 27.11):
+                # сохраняем отметку старта, а не останавливаем его.
+                try:
+                    self._save()
+                except _ClockSaveError as exc:
+                    logger.warning("Секундомер не сохранён при выходе: %s", exc)
         self._thread = None
 
 

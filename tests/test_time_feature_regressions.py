@@ -110,3 +110,16 @@ def test_bad_sleep_timer_value_does_not_touch_existing_timer(monkeypatch):
         assert "Укажите" in result
     assert manager.mock_calls == []
 
+
+
+def test_stopwatch_keeps_running_after_normal_exit(tmp_path):
+    now = [5000.0]
+    path = tmp_path / "clock.json"
+    clock = Clock(path, now=lambda: now[0])
+    clock.sw_start()
+    now[0] += 30
+    clock.stop()                                   # Джарвис закрыли штатно
+    now[0] += 600
+    reopened = Clock(path, now=lambda: now[0])
+    assert reopened.stopwatch.started
+    assert reopened.stopwatch.value(now[0]) == 630
