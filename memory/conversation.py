@@ -338,6 +338,12 @@ class Collector:
             self.done_ts = turns[-1]["ts"]
             self._save()
             logger.info("Память: +%d фактов, −%d, итог: %s", added, removed, (data or {}).get("summary", "")[:80])
+            if added:
+                try:
+                    from core.about_me import autofill
+                    autofill()                       # анкета «Обо мне» заполняется сама
+                except Exception as exc:
+                    logger.debug("Анкета: автозаполнение: %s", exc)
             return f"+{added} −{removed}"
         except Exception as exc:
             pause = _quota_pause(exc)

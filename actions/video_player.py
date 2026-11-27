@@ -382,8 +382,9 @@ def _save_watch(watch: _Watching, state: dict) -> None:
         if _watching is not watch:
             return
         history = _watch_history()
-        if history and history[0] == row:
+        if history and {k: v for k, v in history[0].items() if k != "at"} == row:
             return
+        row["at"] = time.time()                  # когда смотрели — для «какой продолжить?»
         key = _watch_key(watch.title)
         history = [item for item in history if _watch_key(item["title"]) != key]
         atomic_write_json(_watch_file(), [row, *history[:49]])
@@ -468,6 +469,29 @@ def _save_current_watch() -> _Watching | None:
     return None
 
 
+RECENT_SERIES_SEC = 3 * 24 * 3600
+
+
+def recent_series(now: float | None = None) -> list[dict]:
+    """Сериалы, которые смотрели за последние 3 дня (свежие первыми)."""
+    now = time.time() if now is None else now
+    with _watch_lock:
+        history = _watch_history()
+    return [r for r in history if isinstance(r.get("at"), (int, float)) and now - r["at"] <= RECENT_SERIES_SEC]
+
+
+def _which_series() -> str:
+    """«Продолжи сериал», а недавно шло несколько — спросить, какой (просьба 28.11).
+    Один — включаем сразу, как раньше."""
+    recent = recent_series()
+    if len(recent) < 2:
+        return ""
+    names = "; ".join(f"«{r['title']}» (сезон {r['season']}, серия {r['episode']}, {fmt_time(r['position'])})"
+                      for r in recent[:4])
+    return (f"Недавно смотрели несколько: {names}. Спроси владельца, какой продолжить, и вызови "
+            "series_resume с title. Ничего не включай до ответа.")
+
+
 def save_watch_progress() -> None:
     if _watching is not None:
         _save_current_watch()
@@ -478,6 +502,12 @@ def series_context(action: str, title: str, player=None, launch=None,
     if _movie_launch_lock.locked():
         return "Подожди, пока загрузится текущая серия."
     active = _save_current_watch()
+    if not title and action in ("series_resume", "series_continue"):
+        choice = _which_series()
+        if choice:
+            if launch:
+                launch.outcome = "success"
+            return choice
     row = _bookmark(title)
     if not row:
         if action == "series_continue" and title:

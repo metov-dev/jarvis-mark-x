@@ -165,6 +165,7 @@ class AboutDialog(QDialog):
         self.col.setSpacing(12)
         self.col.addWidget(self._summary())
         have = AB.answers()
+        self._auto = AB.auto_keys()
         for group in AB.GROUPS:
             qs = [q for q in AB.QUESTIONS if q.group == group]
             self.col.addSpacing(6)
@@ -274,6 +275,10 @@ class AboutDialog(QDialog):
             col.setSpacing(0)
             col.addWidget(_label(q.label, "stepTitle"))
             col.addWidget(_label(q.why, "hint"))
+            if q.key in self._auto and have.get(q.key):
+                auto = _label("✦ узнал сам из разговора — поправьте, если не так", "hint")
+                auto.setStyleSheet(f"color: {C.PRI};")
+                col.addWidget(auto)
             box = QWidget()
             box.setFixedWidth(250)
             box.setLayout(col)

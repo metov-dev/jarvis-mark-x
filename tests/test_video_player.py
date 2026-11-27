@@ -556,3 +556,23 @@ def test_kinogo_any_mirror_is_kinogo():
     assert not v._kinogo_page("https://kz6.kinogo-films.lol.evil.com/x")
     assert not v._kinogo_page("https://evil.com/5059.html")
     assert "kz\d+" in v._KINOGO_SERIES_PROVIDER and "__KINOGO" not in v._KINOGO_SERIES_PROVIDER
+
+
+def test_resume_asks_which_when_several_recent(monkeypatch):
+    """28.11: смотрю три сериала — «продолжи сериал» должен спросить, какой."""
+    from actions import video_player as v
+    now = 1_000_000.0
+    rows = [{"title": "Игра престолов", "url": "u1", "season": 1, "episode": 4, "position": 470,
+             "duration": 3000, "at": now - 3600},
+            {"title": "Менталист", "url": "u2", "season": 3, "episode": 5, "position": 60,
+             "duration": 2500, "at": now - 7200},
+            {"title": "Старый", "url": "u3", "season": 1, "episode": 1, "position": 10,
+             "duration": 2500, "at": now - 30 * 86400}]
+    monkeypatch.setattr(v, "_watch_history", lambda: rows)
+    monkeypatch.setattr(v.time, "time", lambda: now)
+    monkeypatch.setattr(v, "_save_current_watch", lambda: None)
+    text = v.series_context("series_resume", "")
+    assert "Игра престолов" in text and "Менталист" in text and "Старый" not in text
+    assert "какой продолжить" in text
+    monkeypatch.setattr(v, "_watch_history", lambda: rows[:1] + rows[2:])
+    assert v._which_series() == ""                                 # один свежий — сразу включаем

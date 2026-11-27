@@ -64,3 +64,34 @@ def test_confirmed_answer_removes_conflicting_fact(monkeypatch):
     monkeypatch.setattr(AB, "state", lambda: {"skipped": [], "intro": ""})
     AB.answer("name", "Сардорбек")
     assert mem["identity"] == {"name": "Сардорбек"}
+
+
+def test_autofill_fills_only_empty_fields_and_skips_name(monkeypatch, tmp_path):
+    """28.11: «пусть сам заполняет анкету» — из фактов разговора, только пустые поля."""
+    from core import about_me as AB
+    mem = {"identity": {"name": "Сардорбек", "имя": "Сергей", "город": "Алматы"},
+           "preferences": {"любимый клуб": "Реал Мадрид", "музыка": "фывфыв"}}
+
+    class M:
+        def load_memory(self):
+            return mem
+
+        def update_memory(self, upd):
+            for c, kv in upd.items():
+                mem.setdefault(c, {}).update(kv)
+
+        def all_facts(self):
+            return [(c, k, v) for c, kv in list(mem.items()) for k, v in list(kv.items())]
+
+        def forget(self, c, k, share=True):
+            mem[c].pop(k, None)
+
+    st = {"skipped": [], "intro": ""}
+    monkeypatch.setattr(AB, "_mem", lambda: M())
+    monkeypatch.setattr(AB, "sync", lambda *a: None)
+    monkeypatch.setattr(AB, "state", lambda: dict(st))
+    monkeypatch.setattr(AB, "_save_state", lambda s: st.update(s))
+    filled = AB.autofill()
+    assert set(filled) == {"city", "club"}                      # имя не трогаем, «фывфыв» — мусор
+    assert AB.answers()["city"] == "Алматы" and AB.answers()["name"] == "Сардорбек"
+    assert set(st["auto"]) == {"city", "club"}

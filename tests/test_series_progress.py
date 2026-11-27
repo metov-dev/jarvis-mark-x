@@ -61,8 +61,10 @@ def test_successive_episodes_and_last_position_survive_close(active_episode, mon
     state.update(t=151.9, paused=True)
     vp.save_watch_progress()
     monkeypatch.setattr(vp, "_watching", None)
-    assert vp._bookmark() == {"title": "Менталист", "url": url, "season": 3,
-                              "episode": 9, "position": 151, "duration": 2600}
+    row = vp._bookmark()
+    assert isinstance(row.pop("at"), float)                     # когда смотрели (для «какой продолжить?»)
+    assert row == {"title": "Менталист", "url": url, "season": 3,
+                   "episode": 9, "position": 151, "duration": 2600}
 
 
 def test_transition_retries_until_the_new_stream_has_loaded(active_episode):

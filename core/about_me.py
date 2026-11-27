@@ -115,8 +115,10 @@ def answer(key: str, value: str, sync_now: bool = True) -> str:
             _mem().forget(cat, fkey)
             logger.info("Обо мне: убран спорный факт %s/%s", cat, fkey)
     st = state()
-    if key in st["skipped"]:
-        st["skipped"].remove(key)
+    if key in st["skipped"] or key in (st.get("auto") or []):
+        if key in st["skipped"]:
+            st["skipped"].remove(key)
+        st["auto"] = [k for k in (st.get("auto") or []) if k != key]   # теперь это ответ владельца
         _save_state(st)
     if sync_now:
         sync(key, value)
@@ -258,6 +260,56 @@ def _telegram_name() -> str:
         return me.run(get, timeout=10) or ""
     except Exception:
         return ""
+
+
+# Как Джарвис называет те же вещи, когда запоминает их сам из разговора.
+_AUTO_KEYS = {
+    "city": ("город", "city", "живёт в", "город проживания"),
+    "birthday": ("день рождения", "birthday", "др", "дата рождения"),
+    "languages": ("языки", "язык", "languages"),
+    "occupation": ("работа", "учёба", "профессия", "занятие", "occupation", "чем занимается"),
+    "wake_time": ("подъём", "встаёт", "время подъёма", "wake_time"),
+    "sleep_time": ("отбой", "ложится", "время сна", "sleep_time"),
+    "music": ("музыка", "любимая музыка", "исполнитель", "любимый исполнитель", "music"),
+    "club": ("клуб", "любимый клуб", "футбольный клуб", "болеет за", "club"),
+    "news": ("новости", "интересы в новостях", "news"),
+    "family": ("семья", "близкие", "family"),
+    "goals": ("цели", "цель", "goals"),
+}
+
+
+def autofill() -> list[str]:
+    """Пустые поля анкеты — из того, что Джарвис узнал в разговорах (просьба 28.11).
+    Только пустые: вписанное владельцем не трогаем. Имя не берём — ослышка
+    «перейти на Сергей» уже дала ложное «имя: Сергей». Каждое такое поле
+    помечается «узнал сам» и проходит проверку анкеты."""
+    from core import about_check
+    have = answers()
+    st = state()
+    auto = set(st.get("auto") or [])
+    filled = []
+    for cat, fkey, fval in _mem().all_facts():
+        low = fkey.casefold().strip()
+        for key, names in _AUTO_KEYS.items():
+            if have.get(key) or key in filled or low not in names:
+                continue
+            value = " ".join(str(fval).split())[:120]
+            if not value or about_check.check_field(key, value):
+                continue                                  # шутка/ошибка — не переносим
+            answer(key, value)
+            auto.add(key)
+            filled.append(key)
+    if filled:
+        st = state()
+        st["auto"] = sorted(auto)
+        _save_state(st)
+        logger.info("Обо мне: заполнил сам — %s", ", ".join(filled))
+    return filled
+
+
+def auto_keys() -> set[str]:
+    """Поля, которые Джарвис вписал сам (окно показывает «узнал сам»)."""
+    return set(state().get("auto") or [])
 
 
 def check() -> list[str]:
