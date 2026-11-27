@@ -65,8 +65,22 @@ class Contact:
         return self.name + (f" ({self.telegram})" if self.telegram else "")
 
 
+_LAT = [("sh", "ш"), ("ch", "ч"), ("zh", "ж"), ("kh", "х"), ("ts", "ц"), ("ya", "я"), ("yu", "ю"),
+        ("yo", "е"), ("a", "а"), ("b", "б"), ("v", "в"), ("g", "г"), ("d", "д"), ("e", "е"), ("z", "з"),
+        ("i", "и"), ("y", "й"), ("k", "к"), ("l", "л"), ("m", "м"), ("n", "н"), ("o", "о"), ("p", "п"),
+        ("r", "р"), ("s", "с"), ("t", "т"), ("u", "у"), ("f", "ф"), ("h", "х"), ("c", "к"), ("j", "дж"),
+        ("w", "в"), ("x", "кс"), ("q", "к")]
+
+
+def _cyr(text: str) -> str:
+    """Латиница → кириллица для сравнения имён: «Sardorbek» = «Сардорбек» (28.11 01:33)."""
+    for lat, cyr in _LAT:
+        text = text.replace(lat, cyr)
+    return text
+
+
 def _norm(text: str) -> str:
-    t = (text or "").lower().replace("ё", "е")
+    t = _cyr((text or "").lower()).replace("ё", "е")
     t = re.sub(r"[^\w\s]", " ", t)
     return re.sub(r"\s+", " ", t).strip()
 

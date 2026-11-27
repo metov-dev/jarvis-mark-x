@@ -34,3 +34,11 @@ def test_voice_add_one_from_telegram(tmp_path, monkeypatch):
     assert "уже в контактах" in CT.contacts_tool({"action": "import", "name": "мама"})
     assert "нет «Петя»" in CT.contacts_tool({"action": "import", "name": "Петя"})
     assert "Кого добавить" in CT.contacts_tool({"action": "import", "name": ""})
+
+
+def test_latin_contact_found_by_cyrillic_name(tmp_path, monkeypatch):
+    """28.11 01:33: контакт «Sardorbek», просили «Сардорбек» — «нет в контактах»."""
+    api = _api(tmp_path, monkeypatch)
+    api.book.upsert(CT.Contact(name="Sardorbek", telegram="@sardor"))
+    assert [c.name for c in api.book.find("Сардорбек")] == ["Sardorbek"]
+    assert [c.name for c in api.book.find("Сардорбеку")] == ["Sardorbek"]
