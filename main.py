@@ -1847,7 +1847,20 @@ class Jarvis:
     _go_away_at: float | None = None      # Gemini прислал GoAway — переподключение плановое
     _intro_skipped = False                # интро пропустили — его звук больше не подаём
     _last_gemini_disconnect_notice = float("-inf")  # «нет связи» — не чаще раза в 5 минут
-    _late_tool_turn: tuple[str, float] | None = None  # последняя принятая реплика и когда
+    _late_tool_turn: tuple[str, float] | None = None
+    _wake_cued_at = float("-inf")                 # когда прозвучал сигнал по слову «Джарвис»  # последняя принятая реплика и когда
+
+    def _lone_wake_word(self, text: str) -> bool:
+        """Одно искажённое имя сразу после «Джарвис» («жарвоз», «Jarvis»): это зов, а не
+        команда. Раньше такой ход считался командой и закрывал окно — вопрос через
+        6 с отклонялся «не ко мне» (журнал 27.11 23:06)."""
+        if time.monotonic() >= self._wake_command_until:
+            return False
+        words = re.findall(r"[^\W\d_]+", text.casefold())
+        if len(words) != 1:
+            return False
+        w = words[0]
+        return len(w) >= 4 and w[0] in "джчjcy" and ("р" in w or "r" in w)
 
     def _late_tool_text(self) -> str:
         """Принятая реплика, к которой ещё может прийти запоздавший вызов инструмента."""
@@ -2477,9 +2490,16 @@ class Jarvis:
         self._wake_transcript_until = now + _WAKE_TRANSCRIPT_SEC
         self._wake_name_hint = detected_name
         self._wake_command_until = now + _WAKE_COMMAND_SEC
-        # Детектор нашёл похожее слово. Открываем только захват фразы;
-        # сигнал, приглушение и право выполнить команду появятся после разбора.
         self._awake_until = max(self._awake_until, self._wake_command_until)
+        # Сигнал и приглушение — сразу. Раньше ждали расшифровку имени от Gemini:
+        # сигнал звучал через 4–5 с, владелец повторял, окно команды истекало
+        # (журнал 27.11 22:47 и 22:49). Право выполнить команду — как прежде.
+        self._wake_cued_at = now
+        self._notify_wake()
+        try:
+            self._open_through(_CORRECTION_SEC)
+        except Exception as exc:
+            logger.debug("Приглушение по слову: %s", exc)
         while self._wake_ring:
             put({"data": self._wake_ring.popleft(), "mime_type": "audio/pcm"})
 
@@ -4688,6 +4708,8 @@ class Jarvis:
             # обрывку команды. Иначе «Джарвис … хороший» откроет весь ход.
             alias_enabled = os.getenv("JARVIS_WAKE_CHARLIE", "1") != "0"
             name, command = split_address(text, allow_alias=alias_enabled)
+            if not name and self._lone_wake_word(text):
+                name, command = text, ""
             if name and not command and not final:
                 return False
             q = self._match_voice_quick(text)
@@ -4710,11 +4732,13 @@ class Jarvis:
             explicit_name = reason in {"name", "wake_command"}
             if explicit_name:
                 now = time.monotonic()
-                self._wake_command_until = 0.0 if command else now + _WAKE_COMMAND_SEC
+                self._wake_command_until = 0.0 if command else max(self._wake_command_until,
+                                                                    now + _WAKE_COMMAND_SEC)
                 self._voice_context_until = now + _AWAKE_SEC
                 self.wake()
                 self._open_through(_CORRECTION_SEC)
-                if not command:
+                # Сигнал уже прозвучал по локальному детектору — второй не нужен.
+                if not command and now - self._wake_cued_at > _WAKE_COMMAND_SEC:
                     self._notify_wake()
             if command:
                 named.set()
@@ -4741,6 +4765,7 @@ class Jarvis:
         quick_skip = None           # досказал фразу — глушение снято, но повтор той же команды не делать
         quick_timer: asyncio.Task | None = None
         answered = False            # Gemini уже отвечает на этот ход — не перебивать
+        turn_tools = False          # в этом ходе Gemini вызвал инструмент — команду он понял
 
         def quick_try() -> bool:
             """Если фраза целиком — частая команда, выполнить её сразу."""
@@ -4869,8 +4894,13 @@ class Jarvis:
                                 self._repair_voice_address("".join(in_buf)),
                                 allow_alias=os.getenv("JARVIS_WAKE_CHARLIE", "1") != "0",
                             )
-                            if turn_name and not turn_command:
+                            if not turn_name and self._lone_wake_word("".join(in_buf)):
+                                turn_name, turn_command = "".join(in_buf), ""
+                            if turn_name and not turn_command and not turn_tools:
                                 # После сигнала слушаем пользователя, не ответ Gemini на одно имя.
+                                # Но если Gemini уже выполнил команду, расшифровка просто
+                                # потеряла её конец («Jarvis» вместо «Jarvis, который час») —
+                                # ответ не выбрасываем (журнал 27.11 22:47).
                                 held, fish_text = [], ""
                                 out_buf.clear()
                             check_addressed(final=True)
@@ -4884,6 +4914,7 @@ class Jarvis:
                                 quick_until = time.monotonic() + _QUICK_HOLD_SEC
                             quick_skip = None
                             answered = False
+                            turn_tools = False
                             fish_flush(final=True)
                             fish_text = ""
                             # С внешним голосом ход закрывает _fish_worker,
@@ -4976,6 +5007,7 @@ class Jarvis:
                             if not calls:
                                 continue
                         answered = True
+                        turn_tools = True
                         late_text = "" if addressed or "".join(in_buf).strip() else self._late_tool_text()
                         if addressed:
                             await self._run_tool_calls(calls, True, "".join(in_buf).strip())

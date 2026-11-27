@@ -1327,8 +1327,9 @@ def test_name_acknowledgement_is_immediate_and_keeps_microphone_open(стенд,
 
     j._on_local_wake(sent.append)
 
-    # Сигнал — после разбора фразы (decide → _notify_wake), чтобы не звенеть на ложное слово.
-    assert cues == []
+    # Сигнал — сразу по локальному детектору: ожидание расшифровки Gemini давало
+    # 4–5 с тишины, владелец повторял команду (журнал 27.11).
+    assert cues == [True]
     assert j.is_awake() and not j._is_speaking
     assert [frame["data"] for frame in sent] == [b"name1", b"name2"]
 
@@ -1687,7 +1688,7 @@ async def test_post_wake_accepts_one_non_quick_speech_turn(по_имени, monk
             await task
 
     assert heard_by_tool == [request]
-    assert len(cues) == int(separate_name)
+    assert len(cues) == 1                     # один сигнал, без повтора
     assert jarvis.out_queue.empty()
     assert len(session.tool_responses) == 2
     assert any("не Джарвису" in str(response.response) for response in session.tool_responses)
@@ -1754,3 +1755,62 @@ async def test_late_tool_call_expires(по_имени, monkeypatch):
         _tool_resp("music_player", {"action": "play"}),
     ])
     assert ran == []
+
+
+@pytest.mark.asyncio
+async def test_answer_kept_when_name_only_transcript_but_tool_ran(по_имени, monkeypatch):
+    """Журнал 27.11 22:47: Gemini понял «который час» и вызвал clock, но в расшифровку
+    попало только «Jarvis» — готовый ответ выбрасывался как ответ на одно имя."""
+    jarvis = по_имени.jarvis
+
+    async def execute(fc):
+        return jarvis_main.types.FunctionResponse(id=fc.id, name=fc.name, response={"ok": True})
+
+    monkeypatch.setattr(jarvis, "_execute_tool", execute)
+    monkeypatch.setattr(jarvis, "_match_voice_quick", lambda text: None)
+    monkeypatch.setattr(jarvis_main, "_quick_allowed", lambda: False)
+    monkeypatch.setattr(jarvis, "_learn_from_phrase", lambda text: None)
+    turns = []
+    monkeypatch.setattr(jarvis, "_remember_turn", lambda i, o: turns.append((i, o)))
+    jarvis._on_local_wake(lambda data: None, "джарвис")
+    session = _ToolSession([
+        _resp(heard="Jarvis"),
+        _tool_resp("clock", {"action": "now"}),
+        _resp(said="Сейчас 22:47."),
+        _resp(turn_complete=True),
+    ])
+    jarvis.session = session
+    jarvis.out_queue = asyncio.Queue()
+    jarvis._turn_done_event = asyncio.Event()
+    task = asyncio.create_task(jarvis._receive_audio())
+    try:
+        await asyncio.sleep(0.8)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert turns and turns[-1][1] == "Сейчас 22:47."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("misheard", ["жарвоз", "Jarvis."])
+async def test_misheard_name_turn_keeps_command_window(по_имени, monkeypatch, misheard):
+    """Журнал 27.11 23:06: «Джарвис» расшифрован как «жарвоз», ход принят за команду,
+    окно закрылось — «какая погода у нас завтра?» отклонено «не ко мне»."""
+    ran, session = await _late_tool_run(по_имени, monkeypatch, [
+        _resp(heard=misheard, turn_complete=True),
+        _resp(heard="Да, какая погода у нас завтра?"),
+        _tool_resp("weather", {"day": "tomorrow"}),
+        _resp(turn_complete=True),
+    ])
+    assert [name for name, _ in ran] == ["weather"]
+
+
+def test_lone_wake_word_only_inside_window_and_name_like(по_имени):
+    j = по_имени.jarvis
+    j._wake_command_until = 0.0
+    assert not j._lone_wake_word("жарвоз")
+    j._on_local_wake(lambda d: None, "джарвис")
+    assert j._lone_wake_word("жарвоз") and j._lone_wake_word("Jarvis.")
+    assert not j._lone_wake_word("привет") and not j._lone_wake_word("Да")
+    assert not j._lone_wake_word("Джарвис какая погода")
