@@ -79,6 +79,17 @@ def _cyr(text: str) -> str:
     return text
 
 
+def _owner_name() -> str:
+    try:
+        from memory.memory_manager import all_facts
+        for _cat, key, value in all_facts():
+            if key in ("имя", "name") and value:
+                return str(value).split()[0][:30]
+    except Exception:
+        pass
+    return "Владелец"
+
+
 def _norm(text: str) -> str:
     t = _cyr((text or "").lower()).replace("ё", "е")
     t = re.sub(r"[^\w\s]", " ", t)
@@ -326,25 +337,39 @@ class Contacts:
                               "Если срочно — скажите «срочно».")
         return c, ""
 
-    def confirm_text(self, action: str, who: str, text: str = "", ask: str = "") -> str:
+    def confirm_text(self, action: str, who: str, text: str = "", ask: str = "", from_me: bool = False) -> str:
         c, problem = self.precheck(action, who, text, urgent=True)
         if not c:
             return problem
         if action == "message":
-            return f"Отправить {c.label()} от вашего имени: «{text}»?"
+            if from_me:
+                return f"Отправить {c.label()} с вашего Telegram: «{text}»?"
+            return f"Отправить {c.label()} с аккаунта Джарвиса: «{_owner_name()} просил передать: {text}»?"
         who_calls = "с вашего Telegram" if self.me.linked() else "с аккаунта Джарвиса"
         q = f"Позвонить {c.label()} {who_calls} и сказать: «{text or 'просто позвонить'}»"
         return q + (f" и спросить: «{ask}»?" if ask else "?")
 
-    def message(self, who: str, text: str, as_voice: bool = False) -> str:
+    def message(self, who: str, text: str, as_voice: bool = False, from_me: bool = False) -> str:
+        """По умолчанию — с аккаунта Джарвиса (просьба владельца 28.11), «от моего
+        имени» — с Telegram владельца."""
         c, problem = self.precheck("message", who, text)
         if not c:
             return problem
+        from core import tg_call
+        if not from_me and tg_call.ready() and "Не знаю, кому звонить" not in tg_call.ready():
+            return ("Аккаунт Джарвиса не подключён — не могу написать от себя. "
+                    "Скажите «от моего имени», и отправлю с вашего Telegram.")
         target = c.tg_id or c.telegram
+        if not from_me:
+            text = f"{_owner_name()} просил передать: {text}"
 
         async def send(client):
             from telethon import utils
-            entity = await _entity(client, target)
+            if from_me:
+                entity = await _entity(client, target)
+            else:
+                entity = await client.get_input_entity(
+                    await tg_call.resolve_peer(client, c.telegram or f"id:{c.tg_id}", name=c.name))
             if as_voice:
                 try:
                     from telegram_bot import tts_fish
@@ -363,15 +388,16 @@ class Contacts:
             await client.send_message(entity, text)
             return utils.get_peer_id(entity), False
         try:
-            tg_id, voiced = self.me.run(send)
+            tg_id, voiced = self.me.run(send) if from_me else tg_call.run_as_jarvis(send)
         except Exception as exc:
             logger.warning("Сообщение %s: %s", c.name, exc)
             return f"Не отправил {c.name}: {exc}"
-        if tg_id and c.tg_id != tg_id:
+        if from_me and tg_id and c.tg_id != tg_id:
             c.tg_id = tg_id
             self.book.upsert(c)
         self.log(f"SYS: 💬 → {c.name}: {text}")
-        return f"Отправил {c.name}" + (" голосовым" if voiced else "") + "."
+        return (f"Отправил {c.name}" + (" голосовым" if voiced else "")
+                + (" с вашего Telegram." if from_me else " с аккаунта Джарвиса."))
 
     def call(self, who: str, text: str, urgent: bool = False, done: Callable[[str], None] | None = None,
              ask: str = "") -> str:
@@ -592,7 +618,7 @@ def contacts_tool(p: dict, done: Callable[[str], None] | None = None) -> str:
     who = str(p.get("name") or "").strip()
     text = str(p.get("text") or "").strip()
     if a == "message":
-        return c.message(who, text, bool(p.get("as_voice")))
+        return c.message(who, text, bool(p.get("as_voice")), from_me=bool(p.get("from_me")))
     if a == "call":
         return c.call(who, text, bool(p.get("urgent")), done, ask=str(p.get("ask") or "").strip())
     if a == "read":

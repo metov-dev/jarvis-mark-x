@@ -42,3 +42,21 @@ def test_latin_contact_found_by_cyrillic_name(tmp_path, monkeypatch):
     api.book.upsert(CT.Contact(name="Sardorbek", telegram="@sardor"))
     assert [c.name for c in api.book.find("Сардорбек")] == ["Sardorbek"]
     assert [c.name for c in api.book.find("Сардорбеку")] == ["Sardorbek"]
+
+
+def test_message_goes_from_jarvis_account_by_default(tmp_path, monkeypatch):
+    """28.11 01:34: владелец просил писать с аккаунта Джарвиса, а не со своего."""
+    from core import tg_call
+    api = _api(tmp_path, monkeypatch)
+    api.book.upsert(CT.Contact(name="Мама", telegram="@mama"))
+    monkeypatch.setattr(api, "precheck", lambda *a, **k: (api.book.find("Мама")[0], ""))
+    monkeypatch.setattr(CT, "_owner_name", lambda: "Сардорбек")
+    used = []
+    monkeypatch.setattr(tg_call, "ready", lambda: "")
+    monkeypatch.setattr(tg_call, "run_as_jarvis", lambda fn: used.append("jarvis") or (0, False))
+    monkeypatch.setattr(api.me, "run", lambda fn, timeout=40: used.append("owner") or (5, False))
+    assert "с аккаунта Джарвиса" in api.message("мама", "Задержусь")
+    assert "с вашего Telegram" in api.message("мама", "Задержусь", from_me=True)
+    assert used == ["jarvis", "owner"]
+    monkeypatch.setattr(tg_call, "ready", lambda: "Аккаунт Джарвиса для звонков не подключён")
+    assert "не подключён" in api.message("мама", "Задержусь")

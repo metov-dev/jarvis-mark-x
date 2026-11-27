@@ -105,13 +105,13 @@ def test_message_goes_to_right_person_and_learns_id(book):
     api = CT.Contacts(book, me)
     logs = []
     api.log = logs.append
-    assert api.message("брату", "Буду в 7") == "Отправил Азиз Каримов."
+    assert api.message("брату", "Буду в 7", from_me=True) == "Отправил Азиз Каримов с вашего Telegram."
     book.upsert(CT.Contact("Новенький", "@newguy"))
-    assert api.message("новенькому", "Привет") == "Отправил Новенький."
+    assert api.message("новенькому", "Привет", from_me=True) == "Отправил Новенький с вашего Telegram."
     assert me.client.sent == [(22, "Буду в 7"), (77, "Привет")]
     assert book.one("новенькому")[0].tg_id == 77                         # id запомнен — дальше без поиска
     assert logs[0] == "SYS: 💬 → Азиз Каримов: Буду в 7"
-    assert api.message("Дильнозе", "x").startswith("Писать")            # запрещённому — не уходит
+    assert api.message("Дильнозе", "x", from_me=True).startswith("Писать")            # запрещённому — не уходит
     assert len(me.client.sent) == 2
 
 
@@ -272,10 +272,12 @@ def test_message_needs_yes_and_sends_exactly_what_was_confirmed(jarvis, monkeypa
 
     def fc(text):
         return SimpleNamespace(id="1", name="contacts", args={"action": "message", "name": "маме", "text": text})
+    monkeypatch.setattr(CT, "_owner_name", lambda: "Сардор")
     r = asyncio.run(j._execute_tool(fc("Задержусь на 20 минут")))
     assert "НЕ ВЫПОЛНЕНО" in r.response["result"]
-    assert "дословно: «Отправить Мама (+79991234567) от вашего имени: «Задержусь на 20 минут»?»" \
-        in r.response["result"]
+    # По умолчанию — с аккаунта Джарвиса (28.11), и подтверждение говорит об этом.
+    assert ("дословно: «Отправить Мама (+79991234567) с аккаунта Джарвиса: «Сардор просил передать: "
+            "Задержусь на 20 минут»?»") in r.response["result"]
     assert sent == []
     j._user_turn += 1
     j.last_user_text = "да, отправляй"

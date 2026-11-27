@@ -670,7 +670,7 @@ def _confirm_question(name: str, args: dict) -> str:
     try:
         from core.contacts import contacts
         return contacts().confirm_text(_action_of(args), str(args.get("name", "")), str(args.get("text", "")),
-                                       str(args.get("ask", "")))
+                                       str(args.get("ask", "")), from_me=bool(args.get("from_me")))
     except Exception:
         return ""
 
@@ -1701,7 +1701,7 @@ TOOLS = [
         "name": "contacts",
         "description": (
             "ЛЮДИ из записной книжки пользователя. message — «напиши маме, что задержусь на 20 минут» "
-            "(от ЕГО Telegram; text — само сообщение от первого лица, как написал бы он: «Задержусь на "
+            "(с аккаунта Джарвиса, а с ЕГО Telegram — только при from_me; text — само сообщение от первого лица, как написал бы он: «Задержусь на "
             "20 минут»; as_voice — голосовым); call — «позвони брату и скажи, что ужин готов» (звонит "
             "аккаунт Джарвиса, text — что передать; urgent — если сказал «срочно»); read — «что мне "
             "написали?», «что написала мама?»; add — «добавь контакт Азиз — @aziz» (aliases — как ещё "
@@ -1719,6 +1719,8 @@ TOOLS = [
                 "name": {"type": "STRING", "description": "Кому — как назвал пользователь: «мама», «брат», «Азиз»"},
                 "text": {"type": "STRING", "description": "message: текст сообщения; call: что передать"},
                 "as_voice": {"type": "BOOLEAN"},
+                "from_me": {"type": "BOOLEAN", "description": "message: только если сказал «от моего имени» / "
+                            "«с моего аккаунта». По умолчанию пишет аккаунт Джарвиса."},
                 "urgent": {"type": "BOOLEAN", "description": "call: сказал «срочно» — можно и ночью"},
                 "ask": {"type": "STRING", "description": "call: что спросить у человека и запомнить ответ («во сколько придёт»)"},
                 "telegram": {"type": "STRING", "description": "add: @username или номер"},

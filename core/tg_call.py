@@ -800,6 +800,31 @@ def _drop_session() -> None:
             pass
 
 
+def run_as_jarvis(coro_fn, timeout: float = 40):
+    """Выполнить coro_fn(client) от аккаунта Джарвиса (тот же, что звонит).
+    Сессия Telethon одна на звонки и сообщения — во время звонка не трогаем."""
+    import asyncio as _aio
+
+    from telethon import TelegramClient
+    if not _call_lock.acquire(blocking=False):
+        raise RuntimeError("сейчас идёт звонок — отправлю после него")
+    try:
+        api_id, api_hash = _credentials()
+
+        async def go():
+            client = TelegramClient(session_path(), api_id, api_hash)
+            await client.connect()
+            try:
+                if not await client.is_user_authorized():
+                    raise RuntimeError("аккаунт Джарвиса вышел из сессии (JARVIS.exe --caller-login)")
+                return await coro_fn(client)
+            finally:
+                await client.disconnect()
+        return _aio.run(_aio.wait_for(go(), timeout))
+    finally:
+        _call_lock.release()
+
+
 def ready() -> str:
     """'' — можно звонить, иначе — что мешает, человеческими словами."""
     try:
