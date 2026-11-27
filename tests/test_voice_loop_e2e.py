@@ -1692,3 +1692,65 @@ async def test_post_wake_accepts_one_non_quick_speech_turn(по_имени, monk
     assert len(session.tool_responses) == 2
     assert any("не Джарвису" in str(response.response) for response in session.tool_responses)
 
+
+
+async def _late_tool_run(стенд, monkeypatch, script, wake=True):
+    jarvis = стенд.jarvis
+    ran = []
+
+    async def execute(fc):
+        ran.append((fc.name, fc.jarvis_utterance))
+        return jarvis_main.types.FunctionResponse(id=fc.id, name=fc.name, response={"ok": True})
+
+    monkeypatch.setattr(jarvis, "_execute_tool", execute)
+    monkeypatch.setattr(jarvis, "_notify_wake", lambda: None)
+    monkeypatch.setattr(jarvis, "_match_voice_quick", lambda text: None)
+    monkeypatch.setattr(jarvis_main, "_quick_allowed", lambda: False)
+    monkeypatch.setattr(jarvis, "_learn_from_phrase", lambda text: None)
+    monkeypatch.setattr(jarvis, "_remember_turn", lambda *args: None)
+    if wake:
+        jarvis._on_local_wake(lambda data: None, "джарвис")
+    session = _ToolSession(script)
+    jarvis.session = session
+    jarvis.out_queue = asyncio.Queue()
+    jarvis._turn_done_event = asyncio.Event()
+    task = asyncio.create_task(jarvis._receive_audio())
+    try:
+        await asyncio.sleep(jarvis_main._TOOL_WAKE_WAIT_SEC + 0.5)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    return ran, session
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("heard", ["Джарвис, поставь музыку", "Поставь музыку"])
+async def test_tool_call_after_turn_end_still_runs(по_имени, monkeypatch, heard):
+    """Лог 26.11 22:43: Gemini прислал music_player после конца хода — отказ «не ко мне»."""
+    ran, session = await _late_tool_run(по_имени, monkeypatch, [
+        _resp(heard=heard, turn_complete=True),
+        _tool_resp("music_player", {"action": "play"}),
+    ])
+    assert ran == [("music_player", heard)]
+    assert len(session.tool_responses) == 1
+
+
+@pytest.mark.asyncio
+async def test_late_tool_call_after_foreign_speech_is_rejected(по_имени, monkeypatch):
+    ran, session = await _late_tool_run(по_имени, monkeypatch, [
+        _resp(heard="ну и что он тебе сказал", turn_complete=True),
+        _tool_resp("music_player", {"action": "play"}),
+    ], wake=False)
+    assert ran == []
+    assert "не Джарвису" in session.tool_responses[0].response["result"]
+
+
+@pytest.mark.asyncio
+async def test_late_tool_call_expires(по_имени, monkeypatch):
+    по_имени.monkeypatch.setattr(jarvis_main, "_LATE_TOOL_SEC", -1.0)  # часы Windows шагают по ~15 мс
+    ran, _ = await _late_tool_run(по_имени, monkeypatch, [
+        _resp(heard="Поставь музыку", turn_complete=True),
+        _tool_resp("music_player", {"action": "play"}),
+    ])
+    assert ran == []

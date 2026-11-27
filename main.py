@@ -491,6 +491,9 @@ _WAKE_PREROLL_FRAMES = 32
 _WAKE_CAPTURE_SEC = 2.2
 _WAKE_TRANSCRIPT_SEC = 10.0
 _WAKE_COMMAND_SEC = 12.0
+# Сколько после конца принятой реплики ждём её вызов инструмента (лог 26.11: вызов пришёл
+# через 1–3 с после конца хода и отклонялся как «не ко мне»).
+_LATE_TOOL_SEC = 8.0
 
 
 # После подтверждённого wake word команда может прийти без имени в расшифровке.
@@ -1844,6 +1847,14 @@ class Jarvis:
     _go_away_at: float | None = None      # Gemini прислал GoAway — переподключение плановое
     _intro_skipped = False                # интро пропустили — его звук больше не подаём
     _last_gemini_disconnect_notice = float("-inf")  # «нет связи» — не чаще раза в 5 минут
+    _late_tool_turn: tuple[str, float] | None = None  # последняя принятая реплика и когда
+
+    def _late_tool_text(self) -> str:
+        """Принятая реплика, к которой ещё может прийти запоздавший вызов инструмента."""
+        late = self._late_tool_turn
+        if late and time.monotonic() - late[1] <= _LATE_TOOL_SEC:
+            return late[0]
+        return ""
 
     def __init__(self, ui: JarvisUI):
         self.ui = ui
@@ -4894,9 +4905,16 @@ class Jarvis:
                             was_addressed, addressed = addressed, None
                             explicit_name = False
                             named = asyncio.Event()
+                            if full_in:
+                                # Gemini часто присылает вызов инструмента уже ПОСЛЕ конца хода.
+                                # Принятая реплика остаётся его основанием ещё _LATE_TOOL_SEC.
+                                self._late_tool_turn = ((full_in, time.monotonic())
+                                                        if was_addressed else None)
 
                             if not was_addressed:
                                 if full_in:
+                                    if time.monotonic() < self._awake_until:
+                                        logger.info("Реплика пропущена (не ко мне): «%s»", full_in[:120])
                                     logger.debug("Реплика пропущена: адресат не подтверждён")
                                     _blackbox().event("not_to_me")
                                 self._release_ducking()
@@ -4958,8 +4976,11 @@ class Jarvis:
                             if not calls:
                                 continue
                         answered = True
+                        late_text = "" if addressed or "".join(in_buf).strip() else self._late_tool_text()
                         if addressed:
                             await self._run_tool_calls(calls, True, "".join(in_buf).strip())
+                        elif late_text:
+                            await self._run_tool_calls(calls, True, late_text)
                         else:
                             self._spawn(self._deferred_tool_calls(calls, named, in_buf))
 
