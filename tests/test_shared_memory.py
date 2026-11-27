@@ -159,3 +159,17 @@ def test_repeated_server_500_is_logged_once_and_backs_off(monkeypatch, caplog):
     assert sum("сервер ответил 500" in r.message for r in caplog.records) == 1
     delays = [shared.retry_delay(n) for n in range(0, 9)]
     assert delays[0] == shared.SYNC_SEC and delays[3] > delays[1] and max(delays) <= 900
+
+
+async def test_endpoint_refuses_sync_on_temporary_storage(monkeypatch, server):
+    """27.11: Neon на лимите, сервер на временной SQLite — очередь ПК не принимать."""
+    from fastapi.testclient import TestClient
+
+    from telegram_bot import miniapp_server as ms
+    monkeypatch.setattr(type(server), "degraded", property(lambda self: True))
+    monkeypatch.setattr(ms, "_memory", server)
+    monkeypatch.setattr(ms, "_pc_link_token", lambda: "s3cret")
+    monkeypatch.setattr(ms, "_cfg", lambda: type("C", (), {"allowed_user_ids": [UID]})())
+    r = TestClient(ms.app).post("/api/memory/sync", json={"turns": [{"role": "user", "text": "x", "ts": 1}]},
+                                headers={"Authorization": "Bearer s3cret"})
+    assert r.status_code == 503

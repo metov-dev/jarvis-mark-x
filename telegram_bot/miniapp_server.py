@@ -244,6 +244,11 @@ async def memory_sync(request: Request):
     allowed = _cfg().allowed_user_ids
     if not allowed or _memory is None:
         return JSONResponse({"error": "no owner or memory"}, status_code=503)
+    if getattr(_memory, "degraded", False):
+        # Основная база недоступна (27.11: лимит Neon), работаем на временной.
+        # Принять очередь ПК сейчас — потерять её при перезапуске: ПК удалил
+        # бы отправленное у себя. Пусть держит, пока база не вернётся.
+        return JSONResponse({"error": "storage degraded"}, status_code=503)
     try:
         body = await request.json()
     except Exception:
