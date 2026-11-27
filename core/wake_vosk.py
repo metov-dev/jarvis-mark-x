@@ -59,7 +59,7 @@ _DIRECT_REQUEST = re.compile(
     r"спасибо|помоги|перемотай|позвони|напиши|засеки|разбуди|переключи)(?:\b|$)",
     re.IGNORECASE,
 )
-_FOLLOWUP_LEAD = re.compile(r"^(?:(?:да|ну|а|и|так|слушай|ещё|еще)[,\s]+)+", re.IGNORECASE)
+_FOLLOWUP_LEAD = re.compile(r"^(?:(?:да|ну|а|и|так|слушай|ещё|еще|теперь|потом|снова|опять|давай)[,\s]+)+", re.IGNORECASE)
 _WAKE_WINDOW_FILLER = re.compile(r"^(?:э+|а+|м+|эм+|ну|так|ага|угу)$", re.IGNORECASE)
 
 

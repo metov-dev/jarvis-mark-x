@@ -1793,7 +1793,7 @@ async def test_answer_kept_when_name_only_transcript_but_tool_ran(по_имен�
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("misheard", ["жарвоз", "Jarvis."])
+@pytest.mark.parametrize("misheard", ["жарвоз", "Jarvis.", "шарыбыз"])
 async def test_misheard_name_turn_keeps_command_window(по_имени, monkeypatch, misheard):
     """Журнал 27.11 23:06: «Джарвис» расшифрован как «жарвоз», ход принят за команду,
     окно закрылось — «какая погода у нас завтра?» отклонено «не ко мне»."""
@@ -1812,7 +1812,9 @@ def test_lone_wake_word_only_inside_window_and_name_like(по_имени):
     assert not j._lone_wake_word("жарвоз")
     j._on_local_wake(lambda d: None, "джарвис")
     assert j._lone_wake_word("жарвоз") and j._lone_wake_word("Jarvis.")
+    assert j._lone_wake_word("шарыбыз")
     assert not j._lone_wake_word("привет") and not j._lone_wake_word("Да")
+    assert not j._lone_wake_word("стоп")
     assert not j._lone_wake_word("Джарвис какая погода")
 
 

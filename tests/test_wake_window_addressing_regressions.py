@@ -51,3 +51,8 @@ def test_name_with_misspelled_verb_is_addressed():
     """Журнал 27.11 23:49: «Jarvis, открои Instagram.» — отказ «не ко мне»."""
     assert address_reason("Jarvis, открои Instagram.", final=True) == "name"
     assert address_reason("Джарвис, закрои вкладку", final=True) == "name"
+
+
+def test_followup_with_leading_teper_is_addressed():
+    """Журнал 28.11 00:06: «Сделай громче» сработало, «Теперь тише.» — отказ."""
+    assert address_reason("Теперь тише.", just_answered=True, final=True) == "followup"

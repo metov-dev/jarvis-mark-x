@@ -1862,8 +1862,13 @@ class Jarvis:
         words = re.findall(r"[^\W\d_]+", text.casefold())
         if len(words) != 1:
             return False
+        # Любое одно непонятное слово сразу после сигнала — искажённое имя
+        # («жарвоз», «шарыбыз», журнал 28.11 00:04), если это не известная
+        # команда («пауза») и не явная просьба («привет», «стоп»).
+        from core.wake_vosk import _DIRECT_REQUEST
         w = words[0]
-        return len(w) >= 4 and w[0] in "джчjcy" and ("р" in w or "r" in w)
+        return (len(w) >= 3 and not _DIRECT_REQUEST.match(w)
+                and self._match_voice_quick(text) is None)
 
     def _late_tool_text(self) -> str:
         """Принятая реплика, к которой ещё может прийти запоздавший вызов инструмента."""
