@@ -4252,7 +4252,10 @@ class Jarvis:
             if not allowed:
                 # Команда из чужого разговора: «выключи свет»
                 # по телевизору не должно выключать свет.
-                logger.info("Инструмент %s не выполнен: обращались не ко мне", fc.name)
+                logger.info("Инструмент %s не выполнен: обращались не ко мне "
+                            "(после ответа %.1f с, окно после имени %s)", fc.name,
+                            time.monotonic() - self._answer_ended_at,
+                            "открыто" if time.monotonic() < self._wake_command_until else "закрыто")
                 responses.append(types.FunctionResponse(
                     id=fc.id, name=fc.name,
                     response={"result": "Не выполнено: реплика адресована не Джарвису. Промолчи."},
