@@ -139,9 +139,31 @@ def _known() -> list[App]:
     return apps
 
 
+_refreshing = threading.Event()
+
+
+def _refresh_in_background():
+    if _refreshing.is_set():
+        return
+    _refreshing.set()
+
+    def run():
+        try:
+            build_index(force=True)
+        finally:
+            _refreshing.clear()
+    threading.Thread(target=run, daemon=True, name="app-index-refresh").start()
+
+
 def build_index(force: bool = False) -> list[App]:
-    """Собрать список программ (на Windows ~1-3 с, потом кэш на 10 минут)."""
+    """Список программ. Сборка на этом ПК — 30–45 с (журнал 28.11: «открой лендинг»
+    ждал её 45 с и падал по тайм-ауту). Поэтому готовый список отдаём сразу,
+    даже устаревший, а свежий собираем в фоне; ждём сборку, только если списка нет."""
     global _index, _index_at
+    if _index and not force:
+        if time.monotonic() - _index_at >= 600:
+            _refresh_in_background()
+        return _index
     with _index_lock:
         if _index and not force and time.monotonic() - _index_at < 600:
             return _index

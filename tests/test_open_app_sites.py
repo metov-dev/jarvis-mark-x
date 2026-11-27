@@ -43,3 +43,20 @@ def test_site_with_trailing_words_and_no_blocking_rebuild(no_apps, monkeypatch):
     monkeypatch.setattr("threading.Thread", lambda **kw: type("T", (), {"start": lambda self: started.append(kw)})())
     assert "Не нашёл" in O.open_app({"app_name": "неведомая программа"})
     assert started and rebuilt == []                     # пересборка ушла в фон
+
+
+def test_landing_of_own_project_opens_site(no_apps):
+    """28.11 03:05: «открой мне лендинг брона» — 45 с и «ошибка»."""
+    opened, rebuilt = no_apps
+    assert "в браузере" in O.open_app({"app_name": "мне лендинг брона"})
+    assert opened == ["https://brona.metov.store"] and rebuilt == []
+
+
+def test_stale_index_is_returned_at_once(monkeypatch):
+    from core import win_apps as W
+    monkeypatch.setattr(W, "_index", [W.App("Telegram")])
+    monkeypatch.setattr(W, "_index_at", W.time.monotonic() - 3600)
+    started = []
+    monkeypatch.setattr(W, "_refresh_in_background", lambda: started.append(1))
+    assert [a.name for a in W.build_index()] == ["Telegram"]           # не ждём 45 с
+    assert started == [1]

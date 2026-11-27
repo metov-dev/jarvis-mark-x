@@ -33,6 +33,9 @@ _SITES = {
     "facebook": "https://www.facebook.com", "фейсбук": "https://www.facebook.com",
     "twitter": "https://x.com", "твиттер": "https://x.com",
     "kinogo": "https://kz6.kinogo-films.lol", "киного": "https://kz6.kinogo-films.lol",
+    # Свои проекты (Завод): «открой лендинг Brona», «открой завод».
+    "brona": "https://brona.metov.store", "брона": "https://brona.metov.store", "бронa": "https://brona.metov.store",
+    "zavod": "https://zavod.metov.store", "завод": "https://zavod.metov.store",
 }
 def _site_for(key: str) -> str:
     """Сайт по имени, даже с хвостом из расшифровки: «instagram говорю», «ютуб пожалуйста»."""
@@ -42,7 +45,9 @@ def _site_for(key: str) -> str:
     return _SITES.get(first, "")
 
 
-_POSSESSIVE = re.compile(r"^(?:мой|моя|моё|мое|мои|мою)\s+", re.IGNORECASE)
+_POSSESSIVE = re.compile(r"^(?:(?:мне|мой|моя|моё|мое|мои|мою|наш|нашу|наш[аеи])\s+)+"
+                         r"(?:(?:сайт|лендинг|страниц[уа]|приложение|программу)\s+)?", re.IGNORECASE)
+_SITE_WORDS = re.compile(r"^(?:сайт|лендинг|страниц[уа])\s+", re.IGNORECASE)
 _FORCE_REBUILD_SEC = 600.0
 _last_forced_rebuild = float("-inf")
 
@@ -57,6 +62,7 @@ def open_app(parameters: dict, response=None, player=None) -> str:
         return f"Запускаю только приложения по имени, а не файлы по пути: «{raw}»."
 
     raw = _POSSESSIVE.sub("", raw).strip() or raw
+    raw = _SITE_WORDS.sub("", raw).strip() or raw
     key = win_apps.canonical(raw)
 
     if key in ("браузер", "browser"):
