@@ -2293,7 +2293,8 @@ class Jarvis:
         if sessions is None:
             return
         media = next((m for m in sessions if "jarvis" not in (m.app or "").casefold()), None)
-        became = self._activity.observe(activity.from_media(media, snapshot.get("window", "")))
+        seen = activity.from_media(media, snapshot.get("window", "")) or activity.from_window(snapshot)
+        became = self._activity.observe(seen)
         if became:
             logger.info("Вижу сам: владелец %s %s", "смотрит" if became.kind == "video" else "слушает",
                         became.label())

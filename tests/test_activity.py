@@ -53,3 +53,14 @@ def test_jarvis_observer_feeds_tracker(monkeypatch, tmp_path):
     now[0] += 200
     j._observe_activity({"window": "Менталист 3 сезон 5 серия — Яндекс Браузер"})
     assert "Менталист" in j._activity.describe() and "сезон 3, серия 5" in j._activity.describe()
+
+
+def test_real_window_titles_from_live_probe():
+    """Живой замер 28.11: видео без звука — медиа-сессий нет, есть только заголовок окна."""
+    kg = A.from_window({"application": "browser.exe", "window":
+        "Сериал Игра престолов (1-8 сезон) смотреть онлайн бесплатно в хорошем качестве | 2011 — Яндекс\xa0Браузер"})
+    assert kg and kg.title == "Игра престолов (1-8 сезон)"
+    yt = A.from_window({"application": "browser.exe", "window": "(190) Me at the zoo - YouTube — Яндекс\xa0Браузер"})
+    assert yt and yt.title == "Me at the zoo"
+    assert A.from_window({"application": "browser.exe", "window": "Почта — Яндекс Браузер"}) is None
+    assert A.from_window({"application": "code.exe", "window": "main.py - YouTube clone"}) is None

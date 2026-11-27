@@ -54,8 +54,39 @@ def _kind(app: str) -> str:
     return "music" if any(m in low for m in _MUSIC_APPS) else "video"
 
 
+_BROWSERS = {"browser.exe", "yandex.exe", "chrome.exe", "msedge.exe", "firefox.exe", "opera.exe"}
+_PLAYERS = {"vlc.exe", "potplayermini64.exe", "potplayermini.exe", "mpc-hc64.exe", "mpc-be64.exe",
+            "wmplayer.exe", "video.ui.exe", "kmplayer.exe"}
+# Заголовок вкладки, по которому видно видео (живой замер 28.11: Kinogo —
+# «Сериал Игра престолов (1-8 сезон) смотреть онлайн …», YouTube — «(190) Me at the zoo - YouTube»).
+_VIDEO_TITLE = re.compile(r"смотреть онлайн|youtube|\bсери[яи]\b|\bсезон|kinogo|rutube|vk видео|кинопоиск",
+                          re.IGNORECASE)
+_BROWSER_TAIL = re.compile(r"\s*[—-]\s*(?:яндекс\s*браузер|yandex|google chrome|microsoft\s*edge|mozilla firefox|opera)\s*$",
+                           re.IGNORECASE)
+_NOISE_HEAD = re.compile(r"^\(\d+\)\s*|^(?:сериал|фильм|мультфильм)\s+", re.IGNORECASE)
+
+
 def _clean_title(title: str) -> str:
-    return _SITE_TAIL.sub("", (title or "").strip()).strip(" -—|–")[:120]
+    title = _BROWSER_TAIL.sub("", (title or "").replace("\xa0", " ").strip())
+    title = re.split(r"\s+смотреть\s+онлайн", title, maxsplit=1, flags=re.IGNORECASE)[0]
+    title = re.sub(r"\s*[-—|–]\s*(?:youtube|kinogo.*|rutube)\s*$", "", title, flags=re.IGNORECASE)
+    title = _SITE_TAIL.sub("", title).strip(" -—|–")
+    while _NOISE_HEAD.search(title):
+        title = _NOISE_HEAD.sub("", title, count=1)
+    return title.strip()[:120]
+
+
+def from_window(snapshot: dict) -> "Activity | None":
+    """Без медиа-сессии (видео без звука — Windows о нём молчит): по переднему окну."""
+    app = (snapshot.get("application") or "").casefold()
+    window = snapshot.get("window") or ""
+    if not (app in _PLAYERS or (app in _BROWSERS and _VIDEO_TITLE.search(window))):
+        return None
+    title = _clean_title(window)
+    if not title or title.casefold() in {"youtube", "kinogo"}:
+        return None
+    season, episode = _episode(window)
+    return Activity("video", snapshot.get("application") or "", title, "", season, episode)
 
 
 def _episode(*texts: str) -> tuple[int | None, int | None]:
