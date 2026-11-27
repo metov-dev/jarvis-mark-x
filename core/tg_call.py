@@ -208,6 +208,55 @@ END_CALL = {
 }
 
 
+CALL_BACK = {
+    "name": "call_back",
+    "description": ("Перезвонить владельцу позже: «перезвони через минуту / через полчаса». "
+                    "minutes — через сколько минут (1–720)."),
+    "parameters": {"type": "OBJECT", "properties": {
+        "minutes": {"type": "NUMBER"}, "topic": {"type": "STRING", "description": "О чём звонок"}},
+        "required": ["minutes"]},
+}
+
+# Инструменты Джарвиса, доступные в звонке (часы: будильник, таймер). Раньше в звонке
+# был только end_call, и Джарвис обещал «будильник на 8:00 установлен», «перезвоню
+# через минуту» — не сделав ничего (журнал 28.11 01:09). Ставит main при старте.
+_tool_runner: Callable[[str, dict], str] | None = None
+_tool_declarations: list[dict] = []
+
+
+def set_tools(runner: Callable[[str, dict], str], declarations: list[dict]) -> None:
+    global _tool_runner, _tool_declarations
+    _tool_runner, _tool_declarations = runner, list(declarations)
+
+
+def _call_back(args: dict) -> str:
+    try:
+        minutes = int(float(args.get("minutes") or 0))
+    except (TypeError, ValueError):
+        minutes = 0
+    if not 1 <= minutes <= 720:
+        return "Не понял, через сколько минут перезвонить."
+    when = datetime.now() + timedelta(minutes=minutes)
+    if when.second:                                # расписание по минутам: не раньше срока
+        when += timedelta(minutes=1)
+    topic = str(args.get("topic") or "перезвонить по просьбе владельца")[:120]
+    schedule().add(when.strftime("%H:%M"), topic, "once")
+    return f"Перезвон запланирован на {when:%H:%M}."
+
+
+def run_call_tool(name: str, args: dict) -> str:
+    """Выполнить инструмент из звонка. Возвращает текст для Gemini."""
+    if name == "call_back":
+        return _call_back(args)
+    if _tool_runner is None or name not in {d["name"] for d in _tool_declarations}:
+        return "Это в звонке недоступно — скажи владельцу, что сделаешь после звонка, и не обещай."
+    try:
+        return str(_tool_runner(name, dict(args or {})))
+    except Exception as exc:
+        logger.warning("Инструмент в звонке %s: %s", name, exc)
+        return "Не получилось. Скажи владельцу честно."
+
+
 def instruction(topic: str, context: str = "", name: str = "сэр") -> str:
     now = datetime.now().strftime("%A, %d %B %Y, %H:%M")
     return (
@@ -218,6 +267,8 @@ def instruction(topic: str, context: str = "", name: str = "сэр") -> str:
         + (f"Что нужно сообщить:\n{context}\n" if context else "")
         + "Это телефонный разговор: говори по-русски, коротко и живо, по одной мысли за раз, "
         "без списков и разметки. Начни сам: поздоровайся и скажи, зачем звонишь.\n"
+        "Будильник и таймер ставь инструментом clock, перезвон — call_back. Говори «поставил», "
+        "только когда инструмент ответил успехом; чего не умеешь — так и скажи, не обещай.\n"
         "Сказав, зачем звонишь, НЕ клади трубку: это живой разговор. Замолчи и дай собеседнику "
         "ответить; отвечай на всё, что он скажет («привет», «как дела» и т. п.), поддерживай беседу.\n"
         "end_call вызывай ТОЛЬКО когда собеседник сам попрощался («пока», «до свидания», «спокойной "
@@ -547,7 +598,12 @@ class CallSession:
                     for fc in tc.function_calls or []:
                         if fc.name == "end_call":
                             self._end("end_call")
-                        replies.append(types.FunctionResponse(id=fc.id, name=fc.name, response={"ok": True}))
+                            replies.append(types.FunctionResponse(id=fc.id, name=fc.name, response={"ok": True}))
+                            continue
+                        result = await asyncio.to_thread(run_call_tool, fc.name, dict(fc.args or {}))
+                        logger.info("Звонок: инструмент %s → %s", fc.name, result[:120])
+                        replies.append(types.FunctionResponse(id=fc.id, name=fc.name,
+                                                              response={"result": result}))
                     if replies:
                         await session.send_tool_response(function_responses=replies)
 
@@ -916,7 +972,7 @@ def _gemini_live(prompt: str):
     config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         system_instruction=prompt,
-        tools=[{"function_declarations": [END_CALL]}],
+        tools=[{"function_declarations": [END_CALL, CALL_BACK, *_tool_declarations]}],
         input_audio_transcription={}, output_audio_transcription={},
         realtime_input_config=types.RealtimeInputConfig(
             automatic_activity_detection=types.AutomaticActivityDetection(

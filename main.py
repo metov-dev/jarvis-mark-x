@@ -2134,6 +2134,9 @@ class Jarvis:
             from core import break_reminder, tg_call
             break_reminder.get(say=self.speak).start()
             tg_call.start_scheduler(done=self._call_finished)
+            # В звонке — настоящие часы (будильник, таймер), а не обещания.
+            tg_call.set_tools(self._run_tool_blocking,
+                              [d for d in TOOLS if d.get("name") == "clock"])
         except Exception as exc:
             logger.warning("Перерывы/звонки не запустились: %s", exc)
 
