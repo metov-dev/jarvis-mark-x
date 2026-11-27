@@ -290,11 +290,12 @@ def _kinogo_matches(title: str, links: list[dict], season: int | None = None) ->
         for field in ("title", "alternate"):
             text = link.get(field, "")
             seasons = re.search(r"\s*\((\d+)(?:\s*[-–]\s*(\d+))?\s+сезон(?:ы|ов)?\)\s*$", text, re.I)
-            if season is not None:
-                if not seasons or not int(seasons[1]) <= season <= int(seasons[2] or seasons[1]):
-                    continue
+            if season is not None and (not seasons or not int(seasons[1]) <= season <= int(seasons[2] or seasons[1])):
+                continue
+            # «Игра престолов (1-8 сезон)» — сериал и без номера сезона (28.11 03:08: «не нашёл карточку»).
+            if seasons:
                 text = text[:seasons.start()]
-                text = re.sub(r"^Сериал\s+", "", text, flags=re.I)
+            text = re.sub(r"^Сериал\s+", "", text, flags=re.I)
             for name, title_year in map(_film_title_year, re.split(r"\s+[/|]\s+", text)):
                 year = title_year or link.get("year")
                 if name == wanted and (wanted_year is None or str(year) == wanted_year):
@@ -502,6 +503,10 @@ def series_context(action: str, title: str, player=None, launch=None,
     if _movie_launch_lock.locked():
         return "Подожди, пока загрузится текущая серия."
     active = _save_current_watch()
+    # «Продолжи мой сериал» — Gemini присылал title «мой» и искал такой сериал (28.11 03:09).
+    if re.fullmatch(r"(?:мой|моя|мое|моё|мои|этот|эту|это|его|её|ее|тот|сериал|фильм|мой сериал|этот сериал|"
+                    r"последний|последний сериал)?", (title or "").strip().casefold()):
+        title = ""
     if not title and action in ("series_resume", "series_continue"):
         choice = _which_series()
         if choice:

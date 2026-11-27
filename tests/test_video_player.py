@@ -576,3 +576,24 @@ def test_resume_asks_which_when_several_recent(monkeypatch):
     assert "какой продолжить" in text
     monkeypatch.setattr(v, "_watch_history", lambda: rows[:1] + rows[2:])
     assert v._which_series() == ""                                 # один свежий — сразу включаем
+
+
+def test_series_card_found_without_season():
+    """28.11 03:08: «включи Игру престолов» — «не нашёл карточку» из-за «(1-8 сезон)»."""
+    from actions import video_player as v
+    links = [{"url": "https://kz6.kinogo-films.lol/5059-igra-prestolov.html", "title": "Игра престолов (1-8 сезон)",
+              "alternate": "", "year": "2011"},
+             {"url": "https://kz6.kinogo-films.lol/5052-igra-prestolov-poslednij-dozor-2019.html",
+              "title": "Игра престолов: Последний дозор (2019)", "alternate": "", "year": "2019"}]
+    assert v._kinogo_matches("Игра Престолов", links) == {"https://kz6.kinogo-films.lol/5059-igra-prestolov.html"}
+    assert v._kinogo_matches("Игра Престолов", links, season=3) == {"https://kz6.kinogo-films.lol/5059-igra-prestolov.html"}
+    assert v._kinogo_matches("Игра Престолов", links, season=9) == set()
+
+
+def test_generic_series_title_means_last(monkeypatch):
+    """28.11 03:09: «продолжи мой сериал» → title «мой» → искал сериал «мой» на Kinogo."""
+    from actions import video_player as v
+    monkeypatch.setattr(v, "_save_current_watch", lambda: None)
+    monkeypatch.setattr(v, "_which_series", lambda: "СПРОСИ")
+    assert v.series_context("series_continue", "мой") == "СПРОСИ"
+    assert v.series_context("series_resume", "этот сериал") == "СПРОСИ"
