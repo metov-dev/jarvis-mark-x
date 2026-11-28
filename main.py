@@ -2433,7 +2433,10 @@ class Jarvis:
             self.wake()
             self.last_user_text = text
             self._user_turn += 1
-            self._typed_turn = self._user_turn
+            if getattr(self, "_remote", None) is None:
+                # Набрано за ПК — это владелец. С телефона — нет: проверка
+                # голоса и подтверждения для опасного остаются в силе.
+                self._typed_turn = self._user_turn
             # Набранная частая команда («поставь музыку safe sound») — сразу на ПК,
             # как сказанная голосом. Раньше текст всегда шёл в Gemini, и тот
             # переспрашивал «какая именно музыка?» вместо того, чтобы включить.
@@ -2455,6 +2458,9 @@ class Jarvis:
         text = (text or "").strip()
         if not text:
             return {"ok": False, "text": "Пустая команда."}
+        if getattr(self, "_pending_destructive", None) is not None:
+            # «Да» с телефона не подтверждает опасное действие на ПК.
+            return {"ok": False, "text": "На ПК ждёт подтверждение — ответьте Джарвису за компьютером."}
         if not self._remote_lock.acquire(timeout=timeout):
             return {"ok": False, "text": "Джарвис на ПК занят прошлой командой — повторите через минуту."}
         rec = {"done": threading.Event(), "tools": [], "reply": ""}

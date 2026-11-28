@@ -127,3 +127,20 @@ def test_remote_command_returns_what_jarvis_did():
     j._on_text_command = lambda text: None          # Джарвис молчит
     res = j.remote_command("что-то", timeout=0.2)
     assert res["ok"] is False and "не ответил" in res["text"]
+
+
+def test_remote_is_not_typed_and_cannot_confirm():
+    import threading
+    import main
+    j = main.Jarvis.__new__(main.Jarvis)
+    j._remote, j._remote_lock = None, threading.Lock()
+    j._pending_destructive = ("power", 0, 1)
+    res = j.remote_command("да", timeout=0.2)
+    assert res["ok"] is False and "подтверждение" in res["text"]
+
+
+def test_photo_pc_block_waits_for_button():
+    import inspect
+    from telegram_bot import bot
+    src = inspect.getsource(bot.handle_photo)
+    assert "pcok:" in src and "pc_directive.apply" not in src

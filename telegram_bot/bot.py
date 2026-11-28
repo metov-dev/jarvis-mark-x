@@ -280,6 +280,24 @@ async def _handle_call(message, user_id: int, who: str, say: str) -> None:
     await message.reply_text(res.get("text") or f"Позвонить {who}?", reply_markup=kb)
 
 
+_pending_pc: dict[str, str] = {}
+_pc_counter = 0
+
+
+async def _on_pc_button(q, uid: int, data: str) -> None:
+    kind, token = data.split(":", 1)
+    cmd = _pending_pc.pop(token, None)
+    if not cmd or not token.startswith(f"{uid}_"):
+        await q.answer("Уже не актуально")
+        return
+    if kind == "pcno":
+        await q.answer("Отменено")
+        await q.edit_message_text("✖ Не выполняю.")
+        return
+    await q.answer("Выполняю…")
+    await q.edit_message_text(await pc_directive.run(bridge, cmd, uid))
+
+
 async def _on_call_button(q, uid: int, data: str) -> None:
     kind, token = data.split(":", 1)
     pending = _pending_calls.pop(token, None)
@@ -865,6 +883,9 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         if data.startswith(("macro:", "macrook:")):
             await _on_macro_button(q, uid, data)
+            return
+        if data.startswith(("pcok:", "pcno:")):
+            await _on_pc_button(q, uid, data)
             return
         if data.startswith(("callok:", "callno:")):
             await _on_call_button(q, uid, data)
@@ -1850,9 +1871,20 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # Подпись — слова владельца («открой этот сайт на пк»); сама картинка
         # может нести чужой текст, поэтому опасное pc_directive не пропустит.
         reply = _RE_ACTIONS.sub(lambda m: m.group(0) if m.group(1).upper() == "PC" else "", reply)
-        reply = await pc_directive.apply(bridge, reply, update.effective_user.id,
-                                         trusted=bool(caption.strip()))
-        await update.effective_message.reply_text(reply or "Готово.")
+        # Картинка может нести чужой текст («[[PC]] …» в скриншоте) — поручение
+        # с фото само не выполняется: только кнопкой владельца.
+        clean, cmd = pc_directive.extract(reply)
+        if cmd and pc_directive.is_safe(cmd):
+            global _pc_counter
+            _pc_counter += 1
+            token = f"{update.effective_user.id}_{_pc_counter}"
+            _pending_pc[token] = cmd
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🖥 Выполнить на ПК", callback_data=f"pcok:{token}"),
+                                        InlineKeyboardButton("✖ Нет", callback_data=f"pcno:{token}")]])
+            await update.effective_message.reply_text(
+                f"{clean}\n\nНа ПК: «{cmd}». Выполнить?".strip(), reply_markup=kb)
+            return
+        await update.effective_message.reply_text(clean or "Готово.")
     except Exception:
         logger.exception("handle_photo error")
         await update.effective_message.reply_text("❌ Не смог обработать фото.")
