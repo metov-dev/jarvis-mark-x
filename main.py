@@ -504,7 +504,7 @@ _JUST_ANSWERED_SEC = 12.0   # живой тест 28.11: следующий во
 _WINDOW_ALLOWED_TOOLS = frozenset({
     "web_search", "weather", "location", "clock", "about_me", "football", "translation",
     "video_control", "movie_player", "music_player", "youtube_player", "recall_memory",
-    "factory_status", "nudges",
+    "factory_status", "nudges", "kino",
 })
 _WINDOW_TRANSCRIPT_TOOLS = frozenset({"open_app", "browser", "computer_control"})
 
@@ -1797,7 +1797,7 @@ TOOLS = [
             "Открыть окно Джарвиса: keys — «открой ключи», «где ввести ключ», «проверь ключи», "
             "«подключи Spotify/звонки» (там же вход кнопкой); commands — «открой редактор команд»; "
             "contacts — «открой контакты», «подключи мой телеграм»; about — «открой обо мне», «что ты обо мне знаешь» "
-            "(окно); study — «открой расписание», «открой учёбу»; football — «открой футбол», «покажи матчи Реала»; settings — «открой настройки», «поменяй микрофон», «выбери динамик»; help — «что ты умеешь», «помощь», «подсказки», "
+            "(окно); study — «открой расписание», «открой учёбу»; football — «открой футбол», «покажи матчи Реала»; kino — «открой кино», «что я смотрю» (вкладка: продолжить, сериалы, хочу посмотреть); settings — «открой настройки», «поменяй микрофон», «выбери динамик»; help — «что ты умеешь», «помощь», «подсказки», "
             "«с чего начать»; backup — «сделай резервную копию», «перенеси на новый ПК», «восстанови из копии» "
             "(пароль — только в окне, не голосом). Фильмы и сериалы («поставь сериал», «включи фильм») — "
             "НЕ сюда, а movie_player; если не сказали какой — спроси, окно не открывай."
@@ -1806,7 +1806,7 @@ TOOLS = [
             "type": "OBJECT",
             "properties": {"window": {"type": "STRING",
                                       "enum": ["keys", "commands", "contacts", "about", "study", "help",
-                                               "backup", "football", "settings"]}},
+                                               "backup", "football", "kino", "settings"]}},
             "required": ["window"]
         }
     },
@@ -1866,6 +1866,22 @@ TOOLS = [
                 "action": {"type": "STRING", "enum": ["status", "off_today", "off", "on", "set"]},
                 "first_minutes": {"type": "NUMBER", "description": "set: через сколько минут первое напоминание"},
                 "repeat_minutes": {"type": "NUMBER", "description": "set: как часто потом, в минутах"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "kino",
+        "description": (
+            "Списки вкладки «Кино»: «добавь Дюну в хочу посмотреть» (want), «я досмотрел Менталиста» (done), "
+            "«убери Игру престолов из списка» (remove), «что я смотрю / что у меня в списке» (list). "
+            "Включить фильм или серию — не сюда, а movie_player."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["list", "want", "done", "remove"]},
+                "title": {"type": "STRING", "description": "Название фильма или сериала"},
             },
             "required": ["action"]
         }
@@ -3513,7 +3529,7 @@ class Jarvis:
                           "contacts": ("open_contacts", "Контакты"), "about": ("open_about", "Обо мне"),
                           "study": ("open_study", "Учёба"), "help": ("open_welcome", "Что умеет Джарвис"),
                           "backup": ("open_backup", "Резервная копия"),
-                          "football": ("open_football", "Футбол"),
+                          "football": ("open_football", "Футбол"), "kino": ("open_kino", "Кино"),
                           "settings": ("open_settings", "Настройки")}
                 if which not in titles:
                     result = "Не нашёл такое окно Jarvis. Уточните название, сэр."
@@ -3593,6 +3609,10 @@ class Jarvis:
                 result = await asyncio.to_thread(forget_about, args.get("query", ""))
 
             # ── Инструмент: перерывы и звонки ─────────────────────────────
+            elif name == "kino":
+                from core.kino import kino_tool
+                result = await asyncio.to_thread(kino_tool, args)
+
             elif name == "nudges":
                 from core.nudges import nudges_tool
                 result = await asyncio.to_thread(nudges_tool, args)

@@ -901,7 +901,7 @@ class SetupOverlay(QWidget):
 # (ключ, подпись, иконка ui_icons). «home» — шар и разговор.
 PAGES = [
     ("home", "Джарвис", "spark"), ("commands", "Команды", "bolt"), ("study", "Учёба", "book"),
-    ("football", "Футбол", "ball"), ("contacts", "Контакты", "phone"), ("about", "Обо мне", "person"), ("keys", "Ключи", "key"),
+    ("kino", "Кино", "play"), ("football", "Футбол", "ball"), ("contacts", "Контакты", "phone"), ("about", "Обо мне", "person"), ("keys", "Ключи", "key"),
     ("backup", "Копия", "copy"), ("help", "Что умею", "grid"), ("settings", "Настройки", "gear"),
 ]
 
@@ -1462,6 +1462,9 @@ class MainWindow(QMainWindow):
         elif key == "football":
             from ui_football import FootballDialog
             w = FootballDialog(None)
+        elif key == "kino":
+            from ui_kino import KinoDialog
+            w = KinoDialog(None)
         elif key == "settings":
             from ui_settings import SettingsDialog
             w = SettingsDialog(None)
@@ -1570,6 +1573,9 @@ class MainWindow(QMainWindow):
 
     def open_football(self):
         self.open_page("football")
+
+    def open_kino(self):
+        self.open_page("kino")
 
     def open_settings(self):
         self.open_page("settings")
