@@ -764,6 +764,13 @@ def _tool_outcome(result) -> bool | None:
 
 
 _QUOTA_WORDS = ("resource_exhausted", "quota", "429", "rate limit", "too many requests")
+# Обрыв связи со стороны Google, а не наша ошибка: журнал 28.11 — 50 раз за день,
+# все в тишине, переподключение за 0,5 с. Писались как ERROR и показывали капсулу.
+_TRANSIENT_DROP = ("operation was aborted", "abnormal closure", "deadline expired", "1011")
+
+
+def _transient_drop(low: str) -> bool:
+    return any(k in low for k in _TRANSIENT_DROP)
 
 
 _YES_RE = re.compile(
@@ -5279,7 +5286,8 @@ class Jarvis:
                 logger.info("Плановое переподключение к Gemini (%s)", e)
                 raise _PlannedReconnect(str(e)) from e
             # Простой: Gemini сам закрывает сессию, пока Джарвис спит, — это не сбой.
-            (logger.info if "inactivity" in str(e).lower() else logger.error)("Приём оборвался: %s", e)
+            quiet = "inactivity" in str(e).lower() or _transient_drop(str(e).lower())
+            (logger.info if quiet else logger.error)("Приём оборвался: %s", e)
             # Пробрасываем наверх: TaskGroup свернётся, и сработает
             # реконнект в `run()` — с handle'ом возобновления, так что
             # разговор продолжится с того же места.
@@ -5480,6 +5488,7 @@ class Jarvis:
         while True:
             connected = 0.0
             low = ""
+            idle_drop = False
             self._go_away_at = None
             if self._model_idx and time.monotonic() - self._model_fallback_at > _MODEL_RETRY_TOP_SEC:
                 logger.info("Пробую снова основную модель %s", LIVE_MODELS[0])
@@ -5561,6 +5570,9 @@ class Jarvis:
                     logger.info("Сессия Gemini закрыта по плану (GoAway) — переподключаюсь")
                 elif "inactivity" in low:
                     logger.info("Сессия Gemini закрыта за простой — переподключаюсь")
+                elif _transient_drop(low) and not self.is_awake():
+                    idle_drop = True        # в тишине — тихо переподключаемся
+                    logger.info("Связь с Gemini оборвалась в тишине (%s) — переподключаюсь", reason[:60])
                 else:
                     logger.error("Сессия Gemini оборвалась: %s", reason)
                 logger.debug("Подробности разрыва", exc_info=True)
@@ -5642,7 +5654,7 @@ class Jarvis:
                     self.ui.write_log(f"SYS: 😵 Слишком много запросов: Gemini просит паузу — "
                                       f"вернусь через {delay:.0f} с")
             logger.info("Переподключение через %.1f с", delay)
-            quiet_reconnect = self._go_away_at is not None or "inactivity" in low
+            quiet_reconnect = self._go_away_at is not None or "inactivity" in low or idle_drop
             if not quiet_reconnect:               # плановое — без «переподключаюсь» на экране
                 self.ui.set_state("RECONNECTING")
             await asyncio.sleep(delay)

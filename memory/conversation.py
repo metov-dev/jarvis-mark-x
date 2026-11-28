@@ -252,12 +252,45 @@ def _gemini_json(prompt: str) -> dict:
     from google import genai
     client = genai.Client(api_key=ensure_gemini_key(interactive=False))
     from core import text_models
-    resp = text_models.call(
-        lambda model: client.models.generate_content(
-            model=model, contents=prompt,
-            config={"response_mime_type": "application/json", "temperature": 0.2}),
-        text_models.LITE, first=MODEL, what="Память")
+    try:
+        resp = text_models.call(
+            lambda model: client.models.generate_content(
+                model=model, contents=prompt,
+                config={"response_mime_type": "application/json", "temperature": 0.2}),
+            text_models.LITE, first=MODEL, what="Память")
+    except text_models.AllModelsDown:
+        # Все модели Gemini на дневном лимите — память не стоит, а разбирает
+        # запасная (Groq и др., telegram_bot/fallback_llm). Лимит Gemini остаётся
+        # на разговор.
+        data = _fallback_json(prompt)
+        if data is None:
+            raise
+        logger.info("Память: Gemini на лимите — разобрала запасная модель")
+        return data
     return json.loads(resp.text or "{}")
+
+
+def _fallback_json(prompt: str) -> dict | None:
+    """Тот же разбор запасной моделью. None — запасных нет или ответ не JSON."""
+    import asyncio
+    try:
+        from telegram_bot.fallback_llm import FallbackChain
+        chain = FallbackChain()
+        if not chain:
+            return None
+        text = asyncio.run(chain.complete(
+            prompt + "\n\nОтветь ТОЛЬКО одним JSON-объектом, без пояснений.", temperature=0.2))
+    except Exception as exc:
+        logger.warning("Память: запасная модель не ответила: %s", exc)
+        return None
+    m = re.search(r"\{.*\}", text or "", re.S)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(0))
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 _QUOTA_PAUSE_SEC = 60.0          # если Gemini не назвал свой срок
