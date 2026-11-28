@@ -2433,7 +2433,9 @@ class Jarvis:
             self.wake()
             self.last_user_text = text
             self._user_turn += 1
-            if getattr(self, "_remote", None) is None:
+            if getattr(self, "_remote", None) is not None:
+                self._remote_user_turn = self._user_turn
+            else:
                 # Набрано за ПК — это владелец. С телефона — нет: проверка
                 # голоса и подтверждения для опасного остаются в силе.
                 self._typed_turn = self._user_turn
@@ -3020,6 +3022,8 @@ class Jarvis:
                 and (time.time() - pending[1]) < _CONFIRM_WINDOW_SEC
                 and self._user_turn > pending[2]
                 and _is_affirmative(self.last_user_text)
+                # «Да» с телефона — не подтверждение: проверяем сам ход.
+                and self._user_turn != getattr(self, "_remote_user_turn", -1)
             )
             if not fresh:
                 self._pending_destructive = (key, time.time(), self._user_turn)

@@ -144,3 +144,20 @@ def test_photo_pc_block_waits_for_button():
     from telegram_bot import bot
     src = inspect.getsource(bot.handle_photo)
     assert "pcok:" in src and "pc_directive.apply" not in src
+
+
+def test_phone_yes_never_confirms_destructive():
+    import inspect
+    import main
+    src = inspect.getsource(main.Jarvis._execute_tool)
+    assert '_remote_user_turn' in src
+    j = main.Jarvis.__new__(main.Jarvis)
+    j._remote = {"x": 1}
+    j._user_turn = 4
+    j.wake = lambda: None
+    j._normalize_input_text = lambda t: t
+    j._pending_destructive = ("k", 0, 1)            # quick-путь выключен
+    j._remember_turn = lambda *a: None
+    j._send_text_to_session = lambda t: None
+    j._on_text_command("да")
+    assert j._remote_user_turn == 5 and getattr(j, "_typed_turn", -1) != 5
