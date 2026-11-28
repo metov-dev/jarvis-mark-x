@@ -504,7 +504,7 @@ _JUST_ANSWERED_SEC = 12.0   # живой тест 28.11: следующий во
 _WINDOW_ALLOWED_TOOLS = frozenset({
     "web_search", "weather", "location", "clock", "about_me", "football", "translation",
     "video_control", "movie_player", "music_player", "youtube_player", "recall_memory",
-    "factory_status",
+    "factory_status", "nudges",
 })
 _WINDOW_TRANSCRIPT_TOOLS = frozenset({"open_app", "browser", "computer_control"})
 
@@ -703,6 +703,29 @@ def _confirm_label(name: str, args: dict) -> str:
     if name == "macro":
         return f"Запустить команду «{target}»?" if target else "Запустить свою команду?"
     return f"Выполнить {name} · {action}?"
+
+
+def _about_answers() -> dict:
+    from core.about_me import answers
+    return answers()
+
+
+def _first_lesson(day) -> str | None:
+    """Начало первой пары в этот день («08:30») или None."""
+    from core.study import study
+    starts = sorted(x.start for x in study().lessons_on(day) if x.start)
+    return starts[0] if starts else None
+
+
+def _alarm_before(now, limit) -> bool:
+    """Стоит ли будильник, который зазвонит между now и limit."""
+    from core.clock import clock
+    c = clock()
+    for a in list(c.alarms):
+        ring = c.next_ring(a, after=now)
+        if ring and now < ring <= limit:
+            return True
+    return False
 
 
 def _remote_summary(rec: dict) -> dict:
@@ -1841,6 +1864,25 @@ TOOLS = [
         }
     },
     {
+        "name": "nudges",
+        "description": (
+            "Джарвис сам заговаривает к месту: отбой прошёл, а пользователь смотрит/играет; вечером завтра "
+            "пары, а будильника нет; день рождения. Вызывай на: «не напоминай про отбой» (off, topic), "
+            "«не заговаривай сам» (off), «можешь снова подсказывать» (on), «помолчи пару часов» (snooze), "
+            "«что ты сам мне подсказываешь» (status), «проверь подсказку про отбой» (test, topic) — "
+            "на test произнеси вернувшийся текст как настоящую подсказку."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["status", "on", "off", "snooze", "test"]},
+                "topic": {"type": "STRING", "enum": ["bedtime", "alarm", "birthday"],
+                          "description": "bedtime — отбой, alarm — будильник на пары, birthday — день рождения"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
         "name": "phone_call",
         "description": (
             "Джарвис САМ звонит пользователю в Telegram и разговаривает голосом. "
@@ -2175,7 +2217,8 @@ class Jarvis:
         # и звонки по расписанию в Telegram (core/tg_call.py).
         try:
             from core import break_reminder, tg_call
-            break_reminder.get(say=self.speak).start()
+            break_reminder.get(say=self._break_say).start()
+            self._start_nudges()
             tg_call.start_scheduler(done=self._call_finished)
             # В звонке — настоящие часы (будильник, таймер), а не обещания.
             tg_call.set_tools(self._run_tool_blocking,
@@ -2261,6 +2304,61 @@ class Jarvis:
     def _on_hotkey_mute(self):
         """Реакция на глобальный хоткей Ctrl+Shift+M из любого приложения."""
         self.ui.toggle_mute()
+
+    # ── сам заговаривает к месту (TASK-22, core/nudges.py) ────────────────────
+    def _start_nudges(self):
+        from core import nudges
+        self._nudges = nudges.get(say=self._nudge_say, about=_about_answers, seen=self._nudge_seen,
+                                  first_lesson=_first_lesson, alarm_before=_alarm_before,
+                                  quiet=self._nudge_quiet)
+        self._nudges.start()
+
+    def _nudge_say(self, prompt: str) -> bool:
+        """Сказать подсказку. False — связи нет: тема не сгорает, скажем позже."""
+        if not self._loop or not self.session or not self._loop.is_running():
+            return False
+        self.speak(prompt)
+        return True
+
+    def _break_say(self, prompt: str):
+        """Перерыв — тоже инициатива: после него час тишины и для подсказок."""
+        self.speak(prompt)
+        n = getattr(self, "_nudges", None)
+        if n:
+            n.note_spoken()
+
+    def _nudge_quiet(self) -> str:
+        """Почему сейчас нельзя заговорить самому (пусто — можно)."""
+        from core import tg_call
+        if self.ui.muted:
+            return "микрофон выключен"
+        with self._speaking_lock:
+            if self._is_speaking:
+                return "говорит"
+        if tg_call._call_lock.locked():
+            return "звонок"
+        if getattr(self, "_pending_destructive", None) is not None:
+            return "ждёт подтверждения"
+        if time.monotonic() < self._awake_until:
+            return "идёт разговор"         # подсказка — реплика в диалог, не перебиваем
+        return ""
+
+    def _nudge_seen(self):
+        """Что делает владелец: видео (своё или в браузере), игра."""
+        from core import break_reminder
+        from core.nudges import Seen
+        cur = getattr(getattr(self, "_activity", None), "current", None)
+        if cur is not None and cur.kind == "video":
+            return Seen("video", cur.title)
+        act = break_reminder.current_activity()
+        if act:
+            return Seen(act.kind, act.name)
+        return None
+
+    def _nudge_reply(self, text: str):
+        n = getattr(self, "_nudges", None)
+        if n:
+            n.on_user_reply(text)
 
     def _start_pc_link(self):
         """Связь с телефоном (Mini App «ПК-пульт», команды из Telegram) — внутри Джарвиса.
@@ -2446,6 +2544,7 @@ class Jarvis:
             if q is not None and self._loop and self._loop.is_running():
                 asyncio.run_coroutine_threadsafe(self._quick_run(q, text, echo=False), self._loop)
                 return
+            self._nudge_reply(text)
             self._remember_turn(text, "")
             self._send_text_to_session(text)
 
@@ -3487,6 +3586,10 @@ class Jarvis:
                 result = await asyncio.to_thread(forget_about, args.get("query", ""))
 
             # ── Инструмент: перерывы и звонки ─────────────────────────────
+            elif name == "nudges":
+                from core.nudges import nudges_tool
+                result = await asyncio.to_thread(nudges_tool, args)
+
             elif name == "break_reminder":
                 from core.break_reminder import break_reminder
                 result = break_reminder(args)
@@ -5118,6 +5221,7 @@ class Jarvis:
                                 self.last_user_text = full_in
                                 self._user_turn += 1
                                 self._confirm_heard(full_in)
+                                self._nudge_reply(full_in)
                                 asyncio.get_running_loop().run_in_executor(
                                     None, self._learn_from_phrase, full_in
                                 )
