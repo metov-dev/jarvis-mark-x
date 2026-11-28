@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_BYTES = 4 * 1024 * 1024
 _SIZE = (360, 540)
+_MAX_PIXELS = 4000 * 6000
 _OG = re.compile(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', re.I)
 _HOST = re.compile(r"^kz\d+\.kinogo-films\.lol$")
 _UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -65,18 +66,23 @@ def fetch(title: str, page_url: str) -> Path | None:
         page = _current_mirror(page_url)
         if not _kinogo(page):
             return None
-        html = requests.get(page, timeout=10, headers=_UA).text
+        # Без редиректов: иначе сайт мог бы увести запрос на чужой адрес.
+        html = requests.get(page, timeout=10, headers=_UA, allow_redirects=False).text
         m = _OG.search(html)
         img_url = urllib.parse.urljoin(page, m.group(1)) if m else ""
         if not _kinogo(img_url):
             raise ValueError("нет постера на странице")
-        r = requests.get(img_url, timeout=15, headers=_UA, stream=True)
+        r = requests.get(img_url, timeout=15, headers=_UA, stream=True, allow_redirects=False)
         r.raise_for_status()
         data = r.raw.read(_MAX_BYTES + 1, decode_content=True)
         if len(data) > _MAX_BYTES:
             raise ValueError("картинка слишком большая")
-        im = Image.open(io.BytesIO(data)).convert("RGB")
+        im = Image.open(io.BytesIO(data), formats=["JPEG", "PNG", "WEBP"])
+        if im.width * im.height > _MAX_PIXELS:          # «бомба»: маленький файл, огромная картинка
+            raise ValueError("картинка слишком большая")
+        im.draft("RGB", _SIZE)
         im.thumbnail(_SIZE)
+        im = im.convert("RGB")
         out = path_for(title)
         with _lock:
             tmp = out.with_suffix(".tmp")

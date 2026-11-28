@@ -50,3 +50,20 @@ def test_foreign_image_is_not_downloaded(tmp_path, monkeypatch):
     monkeypatch.setattr(requests, "get", get)
     assert posters.fetch("Менталист", "https://kz6.kinogo-films.lol/2817-mentalist.html") is None
     assert len(calls) == 1
+
+
+def test_redirects_off_and_only_image_formats(tmp_path, monkeypatch):
+    import requests
+    monkeypatch.setattr(posters, "_dir", lambda: tmp_path)
+    seen = []
+
+    def get(url, **kw):
+        seen.append(kw.get("allow_redirects"))
+        if url.endswith(".html"):
+            return _Resp('<meta property="og:image" content="/uploads/p.gif">')
+        b = io.BytesIO()
+        Image.new("RGB", (10, 10)).save(b, "GIF")
+        return _Resp(data=b.getvalue())
+    monkeypatch.setattr(requests, "get", get)
+    assert posters.fetch("X", "https://kz6.kinogo-films.lol/x.html") is None   # GIF не берём
+    assert seen == [False, False]
