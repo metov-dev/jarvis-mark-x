@@ -12,7 +12,7 @@ import threading
 import zlib
 
 from PyQt6.QtCore import QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QLinearGradient, QPainter
+from PyQt6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import (QButtonGroup, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                              QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
@@ -57,12 +57,28 @@ class Poster(QWidget):
 
     def set_title(self, title: str):
         self.title = title
+        from core.posters import cached
+        path = cached(title) if title else None
+        pm = QPixmap(str(path)) if path else QPixmap()
+        self._pm = None if pm.isNull() else pm
         self.update()
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         r = QRectF(self.rect())
+        pm = getattr(self, "_pm", None)
+        if pm is not None:
+            # Настоящий постер: заполнить рамку с обрезкой, углы скруглить.
+            clip = QPainterPath()
+            clip.addRoundedRect(r, 8, 8)
+            p.setClipPath(clip)
+            scaled = pm.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                               Qt.TransformationMode.SmoothTransformation)
+            p.drawPixmap(int((self.width() - scaled.width()) / 2), int((self.height() - scaled.height()) / 2),
+                         scaled)
+            return
         g = QLinearGradient(0, 0, r.width() * 0.4, r.height())
         g.setColorAt(0, _tint(self.title or "?"))
         g.setColorAt(0.75, QColor(C.DARK))
@@ -292,6 +308,11 @@ class KinoDialog(QDialog):
                 logger.warning("Кино, экран: %s", exc)
                 data = []
             self._loaded.emit(data)
+            # Постеры — после списка: показ не ждёт сети; скачались — перерисуем.
+            from core import posters
+            got = [posters.fetch(s.title, s.url) for s in data if s.url and not posters.cached(s.title)]
+            if any(got):
+                self._loaded.emit(data)
         threading.Thread(target=work, daemon=True, name="kino-page").start()
 
     def _apply(self, items):

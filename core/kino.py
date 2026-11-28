@@ -27,6 +27,7 @@ class Show:
     position: int = 0           # секунды
     duration: int = 0
     at: float = 0.0             # когда смотрел
+    url: str = ""               # страница на Киного (для постера)
 
     @property
     def is_series(self) -> bool:
@@ -87,7 +88,8 @@ def shows() -> list[Show]:
         if k in seen or k in d["done"] or (hidden_at is not None and at <= float(hidden_at)):
             continue
         seen.add(k)
-        out.append(Show(b["title"], "watching", b["season"], b["episode"], b["position"], b["duration"], at))
+        out.append(Show(b["title"], "watching", b["season"], b["episode"], b["position"], b["duration"], at,
+                        b.get("url", "")))
     for status in ("want", "done"):
         for k, row in sorted(d[status].items(), key=lambda kv: -float(kv[1].get("at", 0))):
             if k not in seen:
