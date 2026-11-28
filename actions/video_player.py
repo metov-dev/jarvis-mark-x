@@ -921,6 +921,11 @@ def pause_current() -> str:
 
 def control(action: str, value=None) -> str:
     """Пауза, продолжить, перемотка, время, громкость, mute, полный экран…"""
+    a = (action or "").strip().lower()
+    if a in ("close", "exit"):
+        # Закрыть — всегда, даже пока фильм грузится: «закрой видео» отвечало
+        # «Плеер фильма пока недоступен» и ничего не закрывало (журнал 28.11).
+        return _close_video()
     if _movie_launch_lock.locked():
         return "Плеер фильма пока недоступен."
     st = cdp.video_state()
@@ -1009,15 +1014,26 @@ def control(action: str, value=None) -> str:
         t = cdp.tab(create=False)
         ok = t and t.eval("(b => b ? (b.click(), true) : false)(document.querySelector('.ytp-next-button'))")
         return "Следующее видео." if ok else "Тут нет следующего видео."
-    if a in ("close", "exit"):
-        _save_current_watch()
-        cdp.fullscreen(False)
-        cdp.video_js("v.pause()")
-        t = cdp.tab(create=False)
-        if t:
-            t.navigate("about:blank")
-        return "Закрыл видео."
     return f"Не понял команду для видео: «{action}»."
+
+
+def _close_video() -> str:
+    """Закрыть вкладку с видео по-настоящему, а не только поставить на паузу."""
+    t = cdp.tab(create=False)
+    if not t:
+        return ""                                     # своей вкладки нет — решит вызывающий
+    for step in (_save_current_watch, lambda: cdp.fullscreen(False, t=t, settle_sec=1.0),
+                 lambda: cdp.video_js("v.pause()", t=t)):
+        try:
+            step()
+        except Exception as exc:                      # закрыть важнее, чем сохранить место
+            logger.debug("Перед закрытием видео: %s", exc)
+    try:
+        t.navigate("about:blank")
+        return "Закрыл видео."
+    except Exception as exc:
+        logger.warning("Вкладка с видео не закрылась: %s", exc)
+        return "Не удалось закрыть видео."
 
 
 def video_playing() -> bool:

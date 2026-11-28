@@ -283,9 +283,20 @@ def list_windows() -> list[Window]:
     return wins
 
 
+# «Закрой браузер» — какой из запущенных. Яндекс первым: он у владельца основной.
+BROWSER_EXES = ("browser.exe", "chrome.exe", "msedge.exe", "firefox.exe", "opera.exe")
+_BROWSER_WORDS = {"browser", "браузер", "веб браузер", "web browser", "интернет"}
+
+
 def find_windows(target: str, windows: list[Window] | None = None) -> list[Window]:
     key = canonical(target)
     wins = list_windows() if windows is None else windows
+    if key in _BROWSER_WORDS or (target or "").strip().lower() in _BROWSER_WORDS:
+        for exe in BROWSER_EXES:
+            found = [w for w in wins if w.exe == exe]
+            if found:
+                return found
+        return []
     exe = PROCESS.get(key, key if key.endswith(".exe") else "")
     title_key = (target or "").strip().casefold()
     exact = [w for w in wins if w.title.casefold() == title_key]

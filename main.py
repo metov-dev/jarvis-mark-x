@@ -705,6 +705,22 @@ def _confirm_label(name: str, args: dict) -> str:
     return f"Выполнить {name} · {action}?"
 
 
+def _remote_summary(rec: dict) -> dict:
+    """Итог команды с телефона: ответ Джарвиса и что реально сделано."""
+    tools = rec.get("tools") or []
+    reply = (rec.get("reply") or "").strip()
+    failed = [r for _, ok, r in tools if ok is False]
+    if not reply and not tools:
+        return {"ok": False, "text": "Джарвис на ПК не ответил — проверьте, что он запущен и онлайн."}
+    lines = [reply] if reply else []
+    if failed and not reply:
+        lines.append("Не вышло: " + "; ".join(failed[:2]))
+    if not reply:
+        lines.append("Сделано: " + ", ".join(_tool_human(n) for n, ok, _ in tools if ok is not False))
+    ok = bool(tools) and not failed or (not tools and bool(reply))
+    return {"ok": ok, "text": "\n".join(l for l in lines if l.strip()) or "Готово."}
+
+
 def _tool_outcome(result) -> bool | None:
     """Статус команды для интерфейса: успех, ошибка или ожидание подтверждения."""
     if isinstance(result, dict):
@@ -1952,6 +1968,9 @@ class Jarvis:
         # и номер реплики, набранной с клавиатуры (ей доверяем: вы за ПК).
         self._voice_ring: collections.deque = collections.deque(maxlen=480)
         self._typed_turn = -1
+        # Команда с телефона (бот, Mini App): ждём, что Джарвис реально сделал.
+        self._remote: dict | None = None
+        self._remote_lock = threading.Lock()
         self._trusted_text_until = 0.0
         self._voice_context_until = 0.0
         self._wake_name_hint = ""
@@ -2251,6 +2270,7 @@ class Jarvis:
             return None
         try:
             from telegram_bot import pc_server
+            pc_server.set_agent(getattr(self, "remote_command", None))
             return pc_server.start_in_background()
         except Exception as exc:
             logger.warning("Связь с телефоном не поднялась: %s", exc)
@@ -2423,6 +2443,46 @@ class Jarvis:
                 return
             self._remember_turn(text, "")
             self._send_text_to_session(text)
+
+    def remote_command(self, text: str, timeout: float = 40.0) -> dict:
+        """Команда с телефона — как набранная за ПК, со всеми инструментами.
+
+        Раньше бот разбирал её ключевыми словами: «громкость на сто» и «какая
+        музыка» включали музыку, а «скажи вслух …» было некуда передать, и ИИ
+        бота писал «Передаю команду на ПК», ничего не передавая (28.11).
+        Возвращает {"ok", "text"}: что Джарвис ответил и какие инструменты
+        отработали — на телефон уходит только правда."""
+        text = (text or "").strip()
+        if not text:
+            return {"ok": False, "text": "Пустая команда."}
+        if not self._remote_lock.acquire(timeout=timeout):
+            return {"ok": False, "text": "Джарвис на ПК занят прошлой командой — повторите через минуту."}
+        rec = {"done": threading.Event(), "tools": [], "reply": ""}
+        try:
+            self._remote = rec
+            self._on_text_command(text)
+            rec["done"].wait(timeout)
+            if rec["tools"] and not rec["reply"]:
+                rec["done"].clear()
+                rec["done"].wait(min(8.0, timeout))     # ответ после инструмента
+        finally:
+            self._remote = None
+            self._remote_lock.release()
+        return _remote_summary(rec)
+
+    def _remote_tool(self, name: str, response) -> None:
+        rec = getattr(self, "_remote", None)
+        if rec is None:
+            return
+        result = response.get("result", "") if isinstance(response, dict) else response
+        rec["tools"].append((name, _tool_outcome(response), str(result or "")[:300]))
+
+    def _remote_reply(self, text: str) -> None:
+        rec = getattr(self, "_remote", None)
+        if rec is None or not text:
+            return
+        rec["reply"] = text
+        rec["done"].set()
 
     def _on_island_confirm(self, ok: bool):
         """«Разрешить» / «Отклонить» на капсуле — то же, что набрать «да» / «нет»:
@@ -4356,6 +4416,7 @@ class Jarvis:
                 _end(fc.name, _tool_outcome(getattr(fr, "response", None)))
             self._remember_action(fc.name, dict(fc.args or {}), getattr(fr, "response", None))
             responses.append(fr)
+            self._remote_tool(fc.name, getattr(fr, "response", None))
             self._show_card(fc, fr)
             if fc.name in _MEDIA_TOOLS and str((fc.args or {}).get("action", "play")).lower() in (
                     "play", "mood", "search", "latest", "open", ""):
@@ -4420,6 +4481,9 @@ class Jarvis:
             text = quick.reply_for(q, result)
             silent = quick.silent(q, result)
         took_ms = int((time.perf_counter() - started) * 1000)
+        if q.tool:
+            self._remote_tool(q.tool, {"result": result, **({"outcome": "error"} if ok is False else {})})
+        self._remote_reply(text or ("Готово." if ok else ""))
         desktop_reply = q.tool == "desktop_context"
         logged_answer = "Сведения о рабочем окне" if desktop_reply else text
         logger.info("⚡ Мгновенно: «%s» → %s %s → «%s»%s (%d мс)", heard[:80], q.tool or "-",
@@ -5055,6 +5119,7 @@ class Jarvis:
                                 self._maybe_briefing()
 
                             if full_out:
+                                self._remote_reply(full_out)
                                 self.ui.write_log(f"Джарвис: {full_out}")
                             # В журнал — каждый принятый ход. «Не слышит» и «молчит»
                             # иначе неотличимы: «Не ко мне» журнал писал, а ход,

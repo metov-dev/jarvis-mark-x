@@ -199,6 +199,51 @@ def _weather_city(tl: str) -> str | None:
     return None if city in _CITY_STOPWORDS else city
 
 
+# Джарвис на ПК (main.py) со всеми инструментами. Если он запущен, команда
+# с телефона идёт ему, а не разбору по ключевым словам ниже.
+_agent = None
+
+
+def set_agent(fn) -> None:
+    """fn(text) -> {"ok", "text"} — блокирующий вызов, зовётся в потоке."""
+    global _agent
+    _agent = fn
+
+
+async def _run_agent(text: str) -> dict:
+    if _agent is None:
+        # Джарвис не запущен (мост отдельным процессом) — хотя бы разбор по словам.
+        return await _execute(text)
+    try:
+        res = await asyncio.to_thread(_agent, text)
+    except Exception as exc:
+        logger.exception("Команда Джарвису упала")
+        return {"ok": False, "text": f"❌ Ошибка на ПК: {exc}"}
+    return {"ok": bool(res.get("ok")), "text": str(res.get("text") or "")}
+
+
+_NUM_WORDS = {"ноль": 0, "десять": 10, "двадцать": 20, "тридцать": 30, "сорок": 40,
+              "пятьдесят": 50, "половину": 50, "шестьдесят": 60, "семьдесят": 70,
+              "восемьдесят": 80, "девяносто": 90, "сто": 100, "максимум": 100,
+              "максимальную": 100, "полную": 100, "минимум": 0}
+_VOLUME_SET = re.compile(
+    r"громкост\w*\s+(?:на\s+|в\s+)?(\d{1,3}|"
+    + "|".join(sorted(_NUM_WORDS, key=len, reverse=True)) + r")(?!\w)")
+
+
+def _volume_level(tl: str) -> int | None:
+    """«громкость на сто», «сделай громкость 40» → 100, 40. Иначе None."""
+    m = _VOLUME_SET.search(tl)
+    if not m:
+        return None
+    raw = m.group(1)
+    val = int(raw) if raw.isdigit() else _NUM_WORDS[raw]
+    return max(0, min(100, val))
+
+
+_PLAY_VERB = re.compile(r"(?:^|\s)(?:play|включи|играй|поставь|запусти|воспроизведи|продолжи|верни)(?:\s|$)")
+
+
 def _known_app(tl: str) -> str | None:
     """«открой/запусти X», где X — известное приложение. Проверяется до музыки:
     «запусти телеграм» уходило в Spotify-поиск «телеграм»."""
@@ -244,6 +289,12 @@ async def _execute(text: str) -> dict:
         if tl in ("тише", "потише", "сделай тише", "сделай потише",
                   "убавь громкость", "volume down"):
             return _do_volume(-1)
+
+        level = _volume_level(tl)
+        if level is not None:
+            from actions.computer_settings import computer_settings
+            return _r(await asyncio.to_thread(computer_settings, {"action": "volume", "value": str(level)})
+                      or f"Громкость {level}%.")
 
         # Launch the desktop JARVIS app (main.py) on this PC. Must be checked
         # BEFORE the open_app block, otherwise "запусти ..." is caught there.
@@ -294,6 +345,9 @@ async def _execute(text: str) -> dict:
 
         if keywords.matches(tl, _KW["music"]):
             params = _parse_music(tl)
+            if params is None:
+                # «какая нахуй музыка» — слово есть, команды нет (28.11).
+                return _r(f"Не понял команду: «{text}».", unknown=True)
             # play/pause/next/prev/stop/volume работают БЕЗ Spotify Web API —
             # через media-клавиши (Win32 keybd_event) и Spotify URI. Web API
             # используется только для точного поиска трека, если креды есть.
@@ -634,7 +688,7 @@ def _parse_movie(text: str) -> dict | None:
     return options
 
 
-def _parse_music(tl: str) -> dict:
+def _parse_music(tl: str) -> dict | None:
     if any(k in tl for k in ["stop", "стоп", "выключи", "пауза", "pause", "отключи", "замолчи", "хватит"]):
         return {"action": "pause"}
     if any(k in tl for k in ["next", "следующий", "следующую", "следующая", "skip", "переключи", "дальше", "другую", "другой"]):
@@ -649,6 +703,8 @@ def _parse_music(tl: str) -> dict:
         return {"action": "shuffle"}
     if any(k in tl for k in ["что играет", "какой трек", "now playing"]):
         return {"action": "now_playing"}
+    if not _PLAY_VERB.search(tl):
+        return None
     match = re.search(r"(?:play|включи|играй|поставь|запусти|воспроизведи)\s+(.+)", tl)
     query = match.group(1).strip() if match else ""
     if query in ("музыку", "music", "музыка", "трек", "песню", ""):
@@ -798,6 +854,8 @@ async def _handle(ws, msg: dict):
             result = await _handle_userbot(msg)
         elif action in ("list_macros", "run_macro", "resolve_contact", "call_contact"):
             result = await asyncio.to_thread(_handle_action, action, msg)
+        elif action == "agent":
+            result = await _run_agent(str(msg.get("request") or ""))
         elif action in ("study_add", "study_done", "about_answer", "football_watch"):
             from core import pc_snapshot
             result = await asyncio.to_thread(pc_snapshot.apply, action, msg)

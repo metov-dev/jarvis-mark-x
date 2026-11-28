@@ -255,7 +255,7 @@ def _open_run(player=None) -> str:
     return "Не получилось, сэр."
 
 
-def _pick(target: str, player=None):
+def _pick(target: str, player=None, *, whole_app: bool = False):
     """Окно по имени программы («хром», «телега») или то, что впереди.
     Своё окно Джарвиса сюда не попадает никогда (core/win_apps)."""
     from core import win_apps
@@ -265,6 +265,8 @@ def _pick(target: str, player=None):
             return None, f"Окно «{target}» не найдено, сэр."
         exact = [w for w in wins if w.title.casefold() == target.casefold()]
         wins = exact or wins
+        if whole_app and len({w.exe for w in wins}) == 1:
+            return wins, ""                   # «закрой браузер» — все его окна
         if len(wins) > 1:
             titles = ", ".join(f"«{w.title}»" for w in wins[:5])
             return None, f"Уточните, какое окно выбрать: {titles}."
@@ -296,9 +298,11 @@ def _window_op(how: str, target: str, player=None) -> str:
     Раньше Win+↓ лишь «восстанавливал» развёрнутое окно, а «закрой хром»
     жал Alt+F4 тому, что впереди."""
     from core import win_apps
-    wins, err = _pick(target)
+    wins, err = _pick(target, whole_app=how == "close")
     if not wins:
         return err
+    if how == "close" and len(wins) > 1:
+        return _close_all(wins, player)
     window = wins[0]
     name = window.title[:80]
     done = win_apps.close(window) if how == "close" else win_apps.show(window, how)
@@ -311,6 +315,20 @@ def _window_op(how: str, target: str, player=None) -> str:
     if player:
         player.write_log(f"SYS: {verb}: {name}")
     return f"{verb} «{name}», сэр."
+
+
+def _close_all(wins, player=None) -> str:
+    """Все окна одной программы. Раньше закрывалось только первое, и
+    «закрой браузер» оставлял остальные окна открытыми."""
+    from core import win_apps
+    results = [win_apps.close(w) for w in wins]
+    left = sum(1 for r in results if r is not True)
+    app = wins[0].exe.removesuffix(".exe")
+    if player:
+        player.write_log(f"SYS: Закрыл {app}: {len(wins) - left} из {len(wins)} окон")
+    if not left:
+        return f"Закрыл {app} — все окна ({len(wins)}), сэр."
+    return f"Закрыл {len(wins) - left} из {len(wins)} окон {app}; остальные ждут ответа (сохранить?)."
 
 
 # ─── Публичная точка входа ────────────────────────────────────────────────────

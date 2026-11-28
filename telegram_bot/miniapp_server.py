@@ -667,7 +667,10 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool 
 
     if _bridge and _bridge.connected and is_pc_cmd:
         rich = await _bridge.send_command_full(text, user_id)
-        if rich:
+        if rich and rich.get("unknown"):
+            rich = None
+            is_pc_cmd = False          # не команда — ответит ИИ ниже
+        elif rich:
             if rich.get("image_b64"):
                 await ws.send_text(json.dumps({
                     "type": "image",
@@ -685,7 +688,8 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool 
                 "⚠ Подтверждение команды не пришло. Проверь результат в Jarvis на ПК.",
                 want_audio=False,
             )
-        return
+        if is_pc_cmd:
+            return
 
     if _bridge and not _bridge.connected and is_pc_cmd:
         await _send_text(
@@ -708,6 +712,8 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool 
         # сырыми блоками не должен (раньше «[[SEND]] брат | …» звучало вслух).
         import re as _re
         reply = _re.sub(r"\[\[(SEND|FETCH)\]\].*?\[\[/\1\]\]", "", reply, flags=_re.S | _re.I).strip()
+        from telegram_bot import pc_directive
+        reply = await pc_directive.apply(_bridge, reply, user_id)
         # Execute any hidden reminder/habit/task directives → durable store
         if _memory:
             tz = user_context.local_now(user_id, _DEFAULT_TZ).tzinfo

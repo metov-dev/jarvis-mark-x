@@ -106,8 +106,13 @@ def test_window_control_requires_unique_window_and_verifies_close(monkeypatch):
     monkeypatch.setattr(win_apps, "close", close)
 
     command = lambda target: window_control.window_control({"action": "close", "target": target})
-    assert "Уточните" in command("editor.exe")
-    close.assert_not_called()
+    # «Закрой editor» — программу целиком (просьба 28.11: закрывать по-настоящему).
+    # Окно с вопросом «сохранить?» остаётся, и об этом сказано.
+    whole = Mock(side_effect=[True, None])
+    monkeypatch.setattr(win_apps, "close", whole)
+    assert "остальные ждут" in command("editor.exe")
+    assert [c.args for c in whole.call_args_list] == [(report,), (draft,)]
+    monkeypatch.setattr(win_apps, "close", close)
     assert "Окно ещё открыто" in command("Отчёт")
     assert "Не удалось закрыть" in command("Отчёт")
     assert "Закрыл" in command("Отчёт")

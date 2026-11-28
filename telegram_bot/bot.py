@@ -25,6 +25,7 @@ from telegram_bot.config import load as load_config
 from telegram_bot.gemini_client import GeminiClient
 from telegram_bot.pc_bridge import PCBridge
 from telegram_bot import reminders as rem
+from telegram_bot import pc_directive
 from telegram_bot.reminders import parse_reminder
 
 logging.basicConfig(
@@ -340,7 +341,7 @@ def _fetch_is_safe(cmd: str) -> bool:
 # Действия, которые ответ модели может запустить сам. Для чужого текста
 # (пересланное сообщение) они вырезаются: иначе чужое сообщение с
 # «[[SEND]]…» или «сделай [[FETCH]]…» управляло бы отправкой и ПК.
-_RE_ACTIONS = re.compile(r"\[\[(SEND|FETCH)\]\].*?\[\[/\1\]\]", re.S | re.I)
+_RE_ACTIONS = re.compile(r"\[\[(SEND|FETCH|PC)\]\].*?\[\[/\1\]\]", re.S | re.I)
 
 
 async def _resolve_fetch(user_id: int, reply: str) -> str:
@@ -1719,6 +1720,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply = _RE_ACTIONS.sub("", reply)
         else:
             reply = await _resolve_fetch(user_id, reply)      # bounded 1-step action chain
+            reply = await pc_directive.apply(bridge, reply, user_id)
+        reply = pc_directive.scrub(reply)
         reply, summary = await _apply_reminder_directives(user_id, reply)
         if not untrusted:
             reply = await _apply_send_directives(update, user_id, reply)
@@ -1813,6 +1816,7 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             else:
                 reply = await gemini.chat_with_audio(user_id, audio)
             failed = getattr(gemini, "last_generate_failed", False)
+            reply = await pc_directive.apply(bridge, reply, user_id)
             reply, summary = await _apply_reminder_directives(user_id, reply)
             reply = await _apply_send_directives(update, user_id, reply)
             if summary:
@@ -1843,7 +1847,12 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         image = bytes(await file.download_as_bytearray())
         caption = update.effective_message.caption or ""
         reply = await gemini.chat_with_image(update.effective_user.id, image, caption)
-        await update.effective_message.reply_text(reply)
+        # Подпись — слова владельца («открой этот сайт на пк»); сама картинка
+        # может нести чужой текст, поэтому опасное pc_directive не пропустит.
+        reply = _RE_ACTIONS.sub(lambda m: m.group(0) if m.group(1).upper() == "PC" else "", reply)
+        reply = await pc_directive.apply(bridge, reply, update.effective_user.id,
+                                         trusted=bool(caption.strip()))
+        await update.effective_message.reply_text(reply or "Готово.")
     except Exception:
         logger.exception("handle_photo error")
         await update.effective_message.reply_text("❌ Не смог обработать фото.")
